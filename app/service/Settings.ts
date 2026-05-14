@@ -5,12 +5,19 @@ import { createState } from "ags"
 
 export type DrawerSide = "left" | "right" | "top" | "bottom"
 
+// "focused": follow whichever monitor Hyprland reports as focused at toggle time.
+// "primary": first monitor in the GDK list (stable across focus changes).
+// number:    explicit index into the GDK monitor list.
+export type RailMonitor = "focused" | "primary" | number
+
 export type Settings = {
     side: DrawerSide
     width: number
     defaultW: number
     defaultH: number
     hotkey: string
+    railMonitor: RailMonitor
+    blurAllMonitors: boolean
 }
 
 export const DEFAULTS: Settings = {
@@ -19,6 +26,8 @@ export const DEFAULTS: Settings = {
     defaultW: 720,
     defaultH: 480,
     hotkey: "SUPER CTRL, R",
+    railMonitor: "focused",
+    blurAllMonitors: false,
 }
 
 const STATE_DIR = `${GLib.get_user_state_dir()}/hypr-drawer`
@@ -50,6 +59,8 @@ export const [width, setWidthState] = createState<number>(initial.width)
 export const [defaultW, setDefaultWState] = createState<number>(initial.defaultW)
 export const [defaultH, setDefaultHState] = createState<number>(initial.defaultH)
 export const [hotkey, setHotkeyState] = createState<string>(initial.hotkey)
+export const [railMonitor, setRailMonitorState] = createState<RailMonitor>(initial.railMonitor)
+export const [blurAllMonitors, setBlurAllMonitorsState] = createState<boolean>(initial.blurAllMonitors)
 
 function snapshot(): Settings {
     return {
@@ -58,6 +69,8 @@ function snapshot(): Settings {
         defaultW: defaultW(),
         defaultH: defaultH(),
         hotkey: hotkey(),
+        railMonitor: railMonitor(),
+        blurAllMonitors: blurAllMonitors(),
     }
 }
 
@@ -86,6 +99,16 @@ export function setHotkey(next: string): void {
     saveToDisk({ ...snapshot(), hotkey: next })
 }
 
+export function setRailMonitor(next: RailMonitor): void {
+    setRailMonitorState(next)
+    saveToDisk({ ...snapshot(), railMonitor: next })
+}
+
+export function setBlurAllMonitors(next: boolean): void {
+    setBlurAllMonitorsState(next)
+    saveToDisk({ ...snapshot(), blurAllMonitors: next })
+}
+
 // Reset everything back to DEFAULTS. Caller is responsible for any side
 // effects that need to fire (e.g. reapplying the Hyprland keybind), since
 // this module only owns the persisted values.
@@ -95,6 +118,8 @@ export function reset(): void {
     setDefaultWState(DEFAULTS.defaultW)
     setDefaultHState(DEFAULTS.defaultH)
     setHotkeyState(DEFAULTS.hotkey)
+    setRailMonitorState(DEFAULTS.railMonitor)
+    setBlurAllMonitorsState(DEFAULTS.blurAllMonitors)
     saveToDisk({ ...DEFAULTS })
 }
 

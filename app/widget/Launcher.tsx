@@ -10,6 +10,13 @@ import { AppEntry } from "../service/Apps"
 
 const [query, setQuery] = createState("")
 const [page, setPage] = createState<"launcher" | "settings">("launcher")
+const [railMon, setRailMon] = createState<any>(null)
+
+// Called by app.ts before each show() to re-pin the rail to the user's chosen
+// monitor (which can change at runtime when railMonitor is "focused").
+export function setLauncherMonitor(mon: any): void {
+    setRailMon(mon)
+}
 
 function closeDrawer() {
     const hide = (globalThis as any).__hyprDrawerHide
@@ -24,6 +31,7 @@ export default function Launcher() {
         <window
             cssClasses={["drawer-launcher"]}
             namespace="hypr-drawer"
+            gdkmonitor={railMon}
             anchor={anchor}
             layer={Astal.Layer.OVERLAY}
             keymode={Astal.Keymode.ON_DEMAND}
@@ -277,6 +285,36 @@ function SettingsPage() {
                         />
                     </box>
 
+                    <label cssClasses={["settings-section"]} label="Rail monitor" xalign={0} />
+                    <box orientation={Gtk.Orientation.VERTICAL} spacing={4}>
+                        <RailMonitorRadio value="focused" label="Follow focused monitor" />
+                        <RailMonitorRadio value="primary" label="Primary monitor" />
+                        <For each={createComputed(() => listMonitorOptions())}>
+                            {(opt: MonitorOpt) => (
+                                <RailMonitorRadio value={opt.index} label={opt.label} />
+                            )}
+                        </For>
+                    </box>
+
+                    <label cssClasses={["settings-section"]} label="Blur scope" xalign={0} />
+                    <Gtk.CheckButton
+                        label="Blur all monitors when drawer is open"
+                        active={createComputed(() => Settings.blurAllMonitors())}
+                        $={(self: Gtk.CheckButton) => {
+                            self.connect("toggled", () => {
+                                if (self.get_active() !== Settings.blurAllMonitors()) {
+                                    Settings.setBlurAllMonitors(self.get_active())
+                                }
+                            })
+                        }}
+                    />
+                    <label
+                        cssClasses={["launcher-hint"]}
+                        label="When on, the drawer opens on every monitor and apps can live on any of them. When off, only the focused monitor blurs and apps stay there."
+                        xalign={0}
+                        wrap
+                    />
+
                     <label cssClasses={["settings-section"]} label="Toggle hotkey" xalign={0} />
                     <box orientation={Gtk.Orientation.HORIZONTAL} spacing={6}>
                         <button
@@ -390,6 +428,37 @@ function SettingsPage() {
                 </box>
             </Gtk.ScrolledWindow>
         </box>
+    )
+}
+
+type MonitorOpt = { index: number; label: string }
+
+function listMonitorOptions(): MonitorOpt[] {
+    const display = Gdk.Display.get_default()
+    const monitors: any = display?.get_monitors?.()
+    const count = monitors?.get_n_items?.() ?? 0
+    const out: MonitorOpt[] = []
+    for (let i = 0; i < count; i++) {
+        const m: any = monitors.get_item(i)
+        const name = m?.get_connector?.() || `monitor-${i}`
+        out.push({ index: i, label: `${name} (${i})` })
+    }
+    return out
+}
+
+function RailMonitorRadio(props: { value: Settings.RailMonitor; label: string }) {
+    return (
+        <Gtk.CheckButton
+            label={props.label}
+            active={createComputed(() => Settings.railMonitor() === props.value)}
+            $={(self: Gtk.CheckButton) => {
+                self.connect("toggled", () => {
+                    if (self.get_active() && Settings.railMonitor() !== props.value) {
+                        Settings.setRailMonitor(props.value)
+                    }
+                })
+            }}
+        />
     )
 }
 

@@ -4,6 +4,38 @@ import * as Hypr from "./Hypr"
 import * as Memory from "./Memory"
 import * as Settings from "./Settings"
 
+// Resolve which monitor a drop should land on. Priority order:
+//   1. The monitor whose layout bounding rect contains (dropX, dropY).
+//   2. The saved monitor id from Memory, if one was recorded.
+//   3. In "focused only" blur mode, always clamp to the focused monitor.
+//   4. Final fallback: the focused monitor.
+function resolveTargetMonitor(
+    dropX: number,
+    dropY: number,
+    savedMonitor: string | undefined,
+): Hypr.Monitor | undefined {
+    const mons = Hypr.monitors()
+    if (mons.length === 0) return undefined
+
+    if (Settings.blurAllMonitors()) {
+        const hit = mons.find((m) => {
+            if (m.x === undefined || m.y === undefined || !m.width || !m.height) return false
+            return dropX >= m.x && dropX < m.x + m.width && dropY >= m.y && dropY < m.y + m.height
+        })
+        if (hit) return hit
+    }
+
+    if (savedMonitor !== undefined) {
+        const id = parseInt(savedMonitor, 10)
+        if (!Number.isNaN(id)) {
+            const byId = mons.find((m) => m.id === id)
+            if (byId) return byId
+        }
+    }
+
+    return mons.find((m) => m.focused) ?? mons[0]
+}
+
 export type DropSize = { w: number; h: number }
 
 // User-configurable "small default" size. Read from Settings every call so a
@@ -22,6 +54,33 @@ export function previewSize(app: AppEntry): DropSize {
         return { w: saved.w, h: saved.h }
     }
     return defaultSize()
+}
+
+// Drive the daemon's shade refresh directly, so a special-workspace move
+// instantly redraws the per-monitor shades instead of waiting for
+// Hyprland's socket2 event to arrive.
+function forceShadeRefresh(): void {
+    const fn = (globalThis as any).__hyprDrawerRefresh
+    if (typeof fn === "function") {
+        try {
+            fn()
+        } catch (e) {
+            console.error("shade refresh:", e)
+        }
+    }
+}
+
+// Register a window as "drawer-owned" so the daemon will re-trap it into
+// special:drawer if the user drags it onto a regular workspace later.
+function trackDrawerWindow(address: string): void {
+    const fn = (globalThis as any).__hyprDrawerTrack
+    if (typeof fn === "function") {
+        try {
+            fn(address)
+        } catch (e) {
+            console.error("track:", e)
+        }
+    }
 }
 
 function matchClient(cls: string, c: Hypr.Client): boolean {
@@ -78,6 +137,14 @@ export async function dropApp(
     forceNew: boolean,
 ): Promise<void> {
     const saved = Memory.get(app.wmClass)
+    const target = resolveTargetMonitor(dropX, dropY, saved?.monitor)
+
+    // Drop coordinates from the preview overlay are in a coordinate space
+    // anchored to (0,0) of that overlay's monitor. Hyprland's
+    // movewindowpixel expects coordinates in the target monitor's local
+    // space too, so subtract the monitor's layout offset to translate.
+    const localX = target?.x !== undefined ? dropX - target.x : dropX
+    const localY = target?.y !== undefined ? dropY - target.y : dropY
 
     // Move-existing path: same target as the old handleDrop, but now drops
     // the window at the cursor instead of restoring saved x/y.
@@ -88,7 +155,12 @@ export async function dropApp(
                 ? { w: saved.w, h: saved.h }
                 : { w: existing.size[0], h: existing.size[1] }
             await Hypr.moveToSpecial(existing.address)
-            await Hypr.applyGeom(existing.address, centeredGeom(dropX, dropY, size))
+            trackDrawerWindow(existing.address)
+            if (target && existing.monitor !== target.id) {
+                await Hypr.placeWindowOnMonitor(existing.address, target.id)
+                forceShadeRefresh()
+            }
+            await Hypr.applyGeom(existing.address, centeredGeom(localX, localY, size))
             return
         }
     }
@@ -99,11 +171,17 @@ export async function dropApp(
     await Hypr.spawnInSpecial(app.exec)
     const fresh = await awaitNewWindow(app.wmClass, before)
     if (!fresh) return
+    trackDrawerWindow(fresh.address)
+
+    if (target && fresh.monitor !== target.id) {
+        await Hypr.placeWindowOnMonitor(fresh.address, target.id)
+        forceShadeRefresh()
+    }
 
     if (saved) {
         await Hypr.applyGeom(
             fresh.address,
-            centeredGeom(dropX, dropY, { w: saved.w, h: saved.h }),
+            centeredGeom(localX, localY, { w: saved.w, h: saved.h }),
         )
         return
     }
@@ -115,7 +193,7 @@ export async function dropApp(
     const naturalH = fresh.size[1]
     const w = Math.min(naturalW, cap.w)
     const h = Math.min(naturalH, cap.h)
-    const geom = centeredGeom(dropX, dropY, { w, h })
+    const geom = centeredGeom(localX, localY, { w, h })
 
     if (w === naturalW && h === naturalH) {
         // Already small enough — just position it; skip the resize call.
