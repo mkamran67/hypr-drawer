@@ -1,6 +1,32 @@
 import { execAsync, exec } from "ags/process"
 
-export const SPECIAL = "special:drawer"
+// Per-monitor special workspaces: each monitor gets its own
+// `special:drawer-<connector>` (e.g. `special:drawer-DP-1`). This sidesteps
+// the single-instance migration race of a single global `special:drawer`
+// (toggling on monitor B would yank it off monitor A and drag windows
+// along). With one special per monitor, toggling drawer open/closed is just
+// N independent toggles, and tracked windows are pinned to their monitor's
+// workspace by name.
+export const SPECIAL_PREFIX = "special:drawer-"
+
+// Workspace dispatcher name (without the `special:` prefix), used in
+// togglespecialworkspace and [workspace ...] rules.
+export function specialNameFor(monitorName: string): string {
+    return `drawer-${monitorName}`
+}
+
+// Full workspace name (with `special:` prefix), used in movetoworkspacesilent
+// and matchers.
+export function fullSpecialNameFor(monitorName: string): string {
+    return `special:${specialNameFor(monitorName)}`
+}
+
+// Extract the monitor name encoded into a `special:drawer-<name>` workspace
+// name. Returns null for any other workspace name.
+export function monitorFromSpecial(wsName: string | undefined): string | null {
+    if (!wsName || !wsName.startsWith(SPECIAL_PREFIX)) return null
+    return wsName.slice(SPECIAL_PREFIX.length)
+}
 
 export type Client = {
     address: string
@@ -60,40 +86,51 @@ export function findByClass(cls: string): Client | undefined {
     )
 }
 
+// Every client that currently lives in any per-monitor drawer special.
 export function findInSpecial(): Client[] {
-    return clients().filter((c) => c.workspace?.name === SPECIAL)
+    return clients().filter((c) => c.workspace?.name?.startsWith(SPECIAL_PREFIX))
 }
 
 // Single source of truth for "is the drawer overlay currently visible?".
 // Reads Hyprland directly rather than trusting an in-process flag — that
 // flag would desync if anything else (another keybind, daemon restart,
-// session lock cycle) toggled the special workspace behind our back.
+// session lock cycle) toggled the workspace behind our back. With
+// per-monitor specials, "drawer open" means at least one monitor has its
+// drawer-<name> special active.
 export function isDrawerOpen(): boolean {
-    try {
-        const monitors = JSON.parse(exec("hyprctl monitors -j")) as Array<{
-            specialWorkspace?: { name: string }
-        }>
-        return monitors.some((m) => m.specialWorkspace?.name === SPECIAL)
-    } catch {
-        return false
-    }
+    return monitors().some((m) => m.specialWorkspace?.name?.startsWith(SPECIAL_PREFIX))
 }
 
 export async function dispatch(args: string): Promise<string> {
     return await execAsync(`hyprctl dispatch ${args}`)
 }
 
-export async function toggleSpecial(): Promise<void> {
-    await dispatch(`togglespecialworkspace drawer`)
+// Move a window into the target monitor's drawer special workspace. Used to
+// reassign membership after a drag between monitors, or to re-trap an
+// orphan into its rightful monitor on adoption.
+export async function moveToSpecialOn(address: string, monitorName: string): Promise<void> {
+    await dispatch(`movetoworkspacesilent ${fullSpecialNameFor(monitorName)},address:${address}`)
 }
 
-export async function moveToSpecial(address: string): Promise<void> {
-    await dispatch(`movetoworkspacesilent ${SPECIAL},address:${address}`)
+// Move a window to the target monitor's currently-active REGULAR (non-special)
+// workspace. Retained for completeness; the new model keeps drawer apps in
+// per-monitor specials, but evicting back to a regular workspace is still
+// useful as an escape hatch.
+export async function moveToRegularOn(
+    address: string,
+    monitorName: string,
+): Promise<void> {
+    const m = monitors().find((x) => x.name === monitorName)
+    const ws = m?.activeWorkspace?.id
+    if (ws === undefined) return
+    await dispatch(`movetoworkspacesilent ${ws},address:${address}`)
 }
 
-export async function spawnInSpecial(exec: string): Promise<void> {
-    // [workspace] rule: launch directly into the special workspace, floating.
-    await dispatch(`exec [workspace ${SPECIAL} silent; float] ${exec}`)
+// Spawn an app directly into the given monitor's drawer special workspace,
+// floating. Per-monitor specials make this trivial — no migration, no
+// post-spawn eviction; the workspace name itself carries the monitor.
+export async function spawnInSpecialOn(execStr: string, monitorName: string): Promise<void> {
+    await dispatch(`exec [workspace ${fullSpecialNameFor(monitorName)} silent; float] ${execStr}`)
 }
 
 export async function applyGeom(
@@ -112,86 +149,39 @@ export async function moveWindowToMonitor(address: string, monitorName: string):
     await dispatch(`movewindow mon:${monitorName},address:${address}`)
 }
 
-// Migrate special:drawer from its current host monitor to a new one. In
-// Hyprland 0.55+ a single `togglespecialworkspace` on a NON-host monitor
-// atomically migrates the workspace (and the windows trapped inside it)
-// from its current host to the focused monitor — no close-then-open dance
-// required. Toggling on the host instead would close special globally and
-// risks losing the workspace's window list, so we only call this when the
-// target is verified to be a non-host monitor.
-export async function migrateSpecialToMonitor(targetName: string): Promise<void> {
-    const mons = monitors()
-    const target = mons.find((m) => m.name === targetName)
-    const specialHost = mons.find((m) => m.specialWorkspace?.name === SPECIAL)
-    if (!target) return
-    if (!specialHost || specialHost.name === target.name) return
-    await dispatch(`focusmonitor ${target.name}`)
-    await dispatch(`togglespecialworkspace drawer`)
-}
-
-// Place a window on a specific monitor. If special:drawer already lives on
-// the target, just move the window between monitors normally. If special
-// is elsewhere, migrate it to the target so the window stays inside the
-// drawer workspace and is visible on the target monitor.
-export async function placeWindowOnMonitor(address: string, targetId: number): Promise<void> {
-    const mons = monitors()
-    const target = mons.find((m) => m.id === targetId)
-    if (!target) return
-    const specialHost = mons.find((m) => m.specialWorkspace?.name === SPECIAL)
-    if (specialHost && specialHost.id !== target.id) {
-        await migrateSpecialToMonitor(target.name)
-        return
-    }
-    await dispatch(`movewindow mon:${target.name},address:${address}`)
-}
-
-// Open the special:drawer workspace on every monitor that doesn't already
+// Open the drawer special workspace on every monitor that doesn't already
 // have it open. Hyprland's `togglespecialworkspace` always targets the
 // focused monitor, so we walk monitors, focusmonitor on each, toggle if
-// needed, then restore focus to the original monitor.
-export async function openSpecialOnAllMonitors(): Promise<void> {
+// needed, then restore focus to the original monitor. Per-monitor specials
+// mean each toggle is independent — no migration of a shared workspace.
+export async function openAllDrawerSpecials(): Promise<void> {
     const mons = monitors()
     if (mons.length === 0) return
     const originalFocus = mons.find((m) => m.focused)?.name
     for (const m of mons) {
-        if (m.specialWorkspace?.name === SPECIAL) continue
+        const want = specialNameFor(m.name)
+        if (m.specialWorkspace?.name === `special:${want}`) continue
         await dispatch(`focusmonitor ${m.name}`)
-        await dispatch(`togglespecialworkspace drawer`)
+        await dispatch(`togglespecialworkspace ${want}`)
     }
     if (originalFocus) await dispatch(`focusmonitor ${originalFocus}`)
 }
 
-// Close the special:drawer workspace on every monitor that currently has it
-// open. Mirrors openSpecialOnAllMonitors and is safe to call regardless of
-// which mode the drawer was opened in.
-export async function closeSpecialOnAllMonitors(): Promise<void> {
+// Close every drawer special that's currently open. Mirrors
+// openAllDrawerSpecials. Tracked windows stay assigned to their workspace —
+// Hyprland persists special-workspace membership across toggles, so the
+// next open re-reveals them in place.
+export async function closeAllDrawerSpecials(): Promise<void> {
     const mons = monitors()
     if (mons.length === 0) return
     const originalFocus = mons.find((m) => m.focused)?.name
     for (const m of mons) {
-        if (m.specialWorkspace?.name !== SPECIAL) continue
+        const name = m.specialWorkspace?.name
+        if (!name || !name.startsWith(SPECIAL_PREFIX)) continue
+        // Toggle on the monitor that currently hosts this special, which
+        // will close it. Usually that's m itself, but we trust the data.
         await dispatch(`focusmonitor ${m.name}`)
-        await dispatch(`togglespecialworkspace drawer`)
+        await dispatch(`togglespecialworkspace ${name.slice("special:".length)}`)
     }
     if (originalFocus) await dispatch(`focusmonitor ${originalFocus}`)
-}
-
-// Move every special-workspace client that lives on a non-focused monitor
-// onto that monitor's currently-active regular workspace, so the window
-// survives the "blur all → focused only" mode switch instead of vanishing
-// into a hidden special workspace.
-export async function evictSpecialFromNonFocused(): Promise<void> {
-    const mons = monitors()
-    const focused = mons.find((m) => m.focused)
-    if (!focused) return
-    const wsByMonitor = new Map<number, number>()
-    for (const m of mons) {
-        if (m.activeWorkspace) wsByMonitor.set(m.id, m.activeWorkspace.id)
-    }
-    for (const c of findInSpecial()) {
-        if (c.monitor === focused.id) continue
-        const targetWs = wsByMonitor.get(c.monitor)
-        if (targetWs === undefined) continue
-        await dispatch(`movetoworkspacesilent ${targetWs},address:${c.address}`)
-    }
 }

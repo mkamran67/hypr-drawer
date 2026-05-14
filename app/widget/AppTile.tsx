@@ -1,25 +1,37 @@
 import { Gtk, Gdk } from "ags/gtk4"
 import GObject from "gi://GObject"
 import GLib from "gi://GLib"
+import { createComputed } from "ags"
 import { AppEntry } from "../service/Apps"
 import { setActiveDrag, clearActiveDrag } from "../service/DragState"
 import * as Preview from "../service/Preview"
 import * as Spawn from "../service/Spawn"
 import * as Hypr from "../service/Hypr"
 import * as Layout from "../service/Layout"
+import * as Settings from "../service/Settings"
+import * as Usage from "../service/Usage"
+
+type Mode = "tiles" | "grid" | "compact"
 
 type Props = {
     app: AppEntry
     onLaunch: (app: AppEntry, modifiers: number) => void
+    mode?: Mode
 }
 
 // Each tile is a click-to-launch button AND a Wayland drag source. The drag
 // source provides the icon ghost; we drive the preview rectangle + drop
 // dispatch ourselves on drag-begin/drag-end, because cross-surface DnD into
 // our layer-shell overlay doesn't deliver events on this stack.
-export default function AppTile({ app, onLaunch }: Props) {
+export default function AppTile({ app, onLaunch, mode = "tiles" }: Props) {
     const drag = new Gtk.DragSource({ actions: Gdk.DragAction.COPY })
     drag.propagationPhase = Gtk.PropagationPhase.CAPTURE
+
+    const tileClasses = createComputed(() => {
+        const base = ["app-tile", `app-tile-${mode}`]
+        if (Settings.favoritesEnabled() && Usage.isFavorite(app.desktopId)) base.push("favorited")
+        return base
+    })
 
     drag.connect("prepare", () => {
         const payload = JSON.stringify(app)
@@ -56,12 +68,22 @@ export default function AppTile({ app, onLaunch }: Props) {
 
     return (
         <button
-            cssClasses={["app-tile"]}
+            cssClasses={tileClasses}
             tooltipText={app.name}
             onClicked={() => onLaunch(app, lastModifiers)}
             $={(self) => {
                 self.add_controller(drag)
                 self.add_controller(keyCtl)
+
+                // Right-click toggles favorite. Works regardless of whether
+                // the favorites toggle is enabled — that flag only controls
+                // whether favorites influence the visible ordering, so the
+                // user can pre-mark apps before flipping the setting on.
+                const rclick = new Gtk.GestureClick({ button: Gdk.BUTTON_SECONDARY })
+                rclick.connect("pressed", () => {
+                    Usage.toggleFavorite(app.desktopId)
+                })
+                self.add_controller(rclick)
 
                 drag.connect("drag-begin", () => {
                     try {
@@ -108,16 +130,40 @@ export default function AppTile({ app, onLaunch }: Props) {
                 })
             }}
         >
-            <box orientation={Gtk.Orientation.VERTICAL} spacing={4}>
-                <image iconName={app.icon} pixelSize={48} />
+            {renderBody(app, mode)}
+        </button>
+    )
+}
+
+function renderBody(app: AppEntry, mode: Mode) {
+    if (mode === "grid") {
+        return <image iconName={app.icon} pixelSize={40} />
+    }
+    if (mode === "compact") {
+        return (
+            <box orientation={Gtk.Orientation.HORIZONTAL} spacing={8}>
+                <image iconName={app.icon} pixelSize={20} />
                 <label
                     label={app.name}
-                    maxWidthChars={12}
+                    xalign={0}
+                    hexpand
                     ellipsize={3}
                     canFocus={false}
                     selectable={false}
                 />
             </box>
-        </button>
+        )
+    }
+    return (
+        <box orientation={Gtk.Orientation.VERTICAL} spacing={4}>
+            <image iconName={app.icon} pixelSize={48} />
+            <label
+                label={app.name}
+                maxWidthChars={12}
+                ellipsize={3}
+                canFocus={false}
+                selectable={false}
+            />
+        </box>
     )
 }

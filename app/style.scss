@@ -28,6 +28,30 @@ window.drawer-launcher {
   background: rgba(255, 255, 255, 0.08);
 }
 
+.app-tile-grid {
+  padding: 6px;
+}
+
+.app-tile-compact {
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+/* A subtle left rule on tiles/compact and a top rule on grid items makes
+ * favorites discoverable without a separate star widget, and it disappears
+ * automatically when the favorites toggle is off (we don't add the class). */
+.app-tile.favorited {
+  border-left: 2px solid rgba(240, 200, 100, 0.85);
+  padding-left: 6px;
+}
+
+.app-tile-grid.favorited {
+  border-left: none;
+  padding-left: 6px;
+  border-top: 2px solid rgba(240, 200, 100, 0.85);
+  padding-top: 4px;
+}
+
 .launcher-hint {
   font-size: 11px;
   opacity: 0.6;

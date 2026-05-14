@@ -70,3 +70,39 @@ export function search(query: string): AppEntry[] {
         .map((r) => r.a)
 }
 
+// Browse-mode sort used when the search box is empty. With both flags off it
+// reduces to the original alphabetical list. With favorites on, pinned apps
+// float to the top in the order the user added them. With recents on, the
+// rest are ordered by launch count (alphabetical tie-breaker) instead of
+// pure alphabetical.
+export function browseList(opts: {
+    favEnabled: boolean
+    recEnabled: boolean
+    favorites: string[]
+    counts: Record<string, number>
+}): AppEntry[] {
+    const all = list()
+    const favSet = opts.favEnabled ? new Set(opts.favorites) : new Set<string>()
+    const favOrder = opts.favEnabled
+        ? new Map(opts.favorites.map((id, i) => [id, i]))
+        : new Map<string, number>()
+
+    const favs: AppEntry[] = []
+    const rest: AppEntry[] = []
+    for (const a of all) {
+        if (favSet.has(a.desktopId)) favs.push(a)
+        else rest.push(a)
+    }
+    favs.sort((x, y) => (favOrder.get(x.desktopId)! - favOrder.get(y.desktopId)!))
+
+    if (opts.recEnabled) {
+        rest.sort((x, y) => {
+            const cx = opts.counts[x.desktopId] ?? 0
+            const cy = opts.counts[y.desktopId] ?? 0
+            if (cx !== cy) return cy - cx
+            return x.name.localeCompare(y.name)
+        })
+    }
+    return [...favs, ...rest]
+}
+

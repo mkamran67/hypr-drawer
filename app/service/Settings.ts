@@ -10,6 +10,10 @@ export type DrawerSide = "left" | "right" | "top" | "bottom"
 // number:    explicit index into the GDK monitor list.
 export type RailMonitor = "focused" | "primary" | number
 
+export type ViewMode = "tiles" | "grid" | "compact"
+
+export const VIEW_MODE_ORDER: ViewMode[] = ["tiles", "grid", "compact"]
+
 export type Settings = {
     side: DrawerSide
     width: number
@@ -18,6 +22,9 @@ export type Settings = {
     hotkey: string
     railMonitor: RailMonitor
     blurAllMonitors: boolean
+    viewMode: ViewMode
+    favoritesEnabled: boolean
+    recentsEnabled: boolean
 }
 
 export const DEFAULTS: Settings = {
@@ -28,6 +35,9 @@ export const DEFAULTS: Settings = {
     hotkey: "SUPER CTRL, R",
     railMonitor: "focused",
     blurAllMonitors: false,
+    viewMode: "tiles",
+    favoritesEnabled: false,
+    recentsEnabled: false,
 }
 
 const STATE_DIR = `${GLib.get_user_state_dir()}/hypr-drawer`
@@ -61,6 +71,9 @@ export const [defaultH, setDefaultHState] = createState<number>(initial.defaultH
 export const [hotkey, setHotkeyState] = createState<string>(initial.hotkey)
 export const [railMonitor, setRailMonitorState] = createState<RailMonitor>(initial.railMonitor)
 export const [blurAllMonitors, setBlurAllMonitorsState] = createState<boolean>(initial.blurAllMonitors)
+export const [viewMode, setViewModeState] = createState<ViewMode>(initial.viewMode)
+export const [favoritesEnabled, setFavoritesEnabledState] = createState<boolean>(initial.favoritesEnabled)
+export const [recentsEnabled, setRecentsEnabledState] = createState<boolean>(initial.recentsEnabled)
 
 function snapshot(): Settings {
     return {
@@ -71,6 +84,9 @@ function snapshot(): Settings {
         hotkey: hotkey(),
         railMonitor: railMonitor(),
         blurAllMonitors: blurAllMonitors(),
+        viewMode: viewMode(),
+        favoritesEnabled: favoritesEnabled(),
+        recentsEnabled: recentsEnabled(),
     }
 }
 
@@ -109,6 +125,29 @@ export function setBlurAllMonitors(next: boolean): void {
     saveToDisk({ ...snapshot(), blurAllMonitors: next })
 }
 
+export function setViewMode(next: ViewMode): void {
+    setViewModeState(next)
+    saveToDisk({ ...snapshot(), viewMode: next })
+}
+
+export function cycleViewMode(): ViewMode {
+    const cur = viewMode()
+    const idx = VIEW_MODE_ORDER.indexOf(cur)
+    const next = VIEW_MODE_ORDER[(idx + 1) % VIEW_MODE_ORDER.length]
+    setViewMode(next)
+    return next
+}
+
+export function setFavoritesEnabled(next: boolean): void {
+    setFavoritesEnabledState(next)
+    saveToDisk({ ...snapshot(), favoritesEnabled: next })
+}
+
+export function setRecentsEnabled(next: boolean): void {
+    setRecentsEnabledState(next)
+    saveToDisk({ ...snapshot(), recentsEnabled: next })
+}
+
 // Reset everything back to DEFAULTS. Caller is responsible for any side
 // effects that need to fire (e.g. reapplying the Hyprland keybind), since
 // this module only owns the persisted values.
@@ -120,6 +159,9 @@ export function reset(): void {
     setHotkeyState(DEFAULTS.hotkey)
     setRailMonitorState(DEFAULTS.railMonitor)
     setBlurAllMonitorsState(DEFAULTS.blurAllMonitors)
+    setViewModeState(DEFAULTS.viewMode)
+    setFavoritesEnabledState(DEFAULTS.favoritesEnabled)
+    setRecentsEnabledState(DEFAULTS.recentsEnabled)
     saveToDisk({ ...DEFAULTS })
 }
 

@@ -1,5 +1,5 @@
 import app from "ags/gtk4/app"
-import { exec, subprocess } from "ags/process"
+import { subprocess } from "ags/process"
 import GLib from "gi://GLib"
 import { Gdk } from "ags/gtk4"
 import Launcher, { setLauncherMonitor } from "./widget/Launcher"
@@ -16,6 +16,15 @@ import style from "./style.scss"
 // daemon restart, a lock cycle) touches the special workspace. We always
 // read the truth from Hyprland via Hypr.isDrawerOpen() before acting.
 let launcherWin: any = null
+
+// Set while hide()/show() is mid-transition. The socket2 listener fires
+// focusedmon/activespecial events as a side effect of our own
+// openAllDrawerSpecials/closeAllDrawerSpecials sequence; without this
+// guard those events trigger refreshMonitorAnchors, which re-creates the
+// shade right after we just tore it down (and vice versa). The guard is
+// cleared after the next idle so any genuine user-initiated focus change
+// during the brief async window is still handled correctly.
+let transitioning = false
 
 function applyLayerVisibility(want: boolean) {
     if (launcherWin) launcherWin.visible = want
@@ -57,68 +66,85 @@ function refreshMonitorAnchors(): void {
     const mon = resolveRailMonitor()
     setLauncherMonitor(mon)
     if (Settings.blurAllMonitors()) {
-        Shade.show()
+        Shade.show(drawerTracked)
     } else {
         Shade.hide()
     }
 }
 
-// Addresses of windows the user has "put into" the drawer (either by
-// spawning them via a tile drop or by having them present in special when
-// the drawer opened). While the drawer is visible, these stay trapped in
-// special:drawer — if the user drags one between monitors via normal
-// window-move, Hyprland pulls it onto a regular workspace, which would
-// drop it behind a shade. We watch for that and re-trap it.
+// Addresses of windows the user has launched/dragged via the drawer. These
+// windows live on their target monitor's REGULAR workspace, not in
+// special:drawer — special is only a transient spawn pipe (see Spawn.ts).
+// The set survives drawer hide/show so the shade can keep skipping monitors
+// that host these windows across toggles. Dead addresses are pruned in
+// pruneDeadTracked() and on closewindow socket events.
 const drawerTracked = new Set<string>()
 
 export function trackDrawerWindow(address: string): void {
     drawerTracked.add(address)
 }
 
-// Pull a drawer-owned window back into special:drawer after Hyprland
-// ejected it (e.g. cross-monitor window drag from special). Migrates the
-// special workspace to the window's current monitor first so the window
-// becomes visible immediately under the rail's blur, then re-adds the
-// window to special:drawer.
-async function retrapDrawerWindow(address: string): Promise<void> {
-    const client = Hypr.clients().find((c) => c.address === address)
-    if (!client) {
-        drawerTracked.delete(address)
-        return
+function pruneDeadTracked(): void {
+    if (drawerTracked.size === 0) return
+    const live = new Set(Hypr.clients().map((c) => c.address))
+    for (const addr of [...drawerTracked]) {
+        if (!live.has(addr)) drawerTracked.delete(addr)
     }
-    const mons = Hypr.monitors()
-    const target = mons.find((m) => m.id === client.monitor)
-    const specialHost = mons.find((m) => m.specialWorkspace?.name === "special:drawer")
-    if (target && (!specialHost || specialHost.id !== target.id)) {
-        await Hypr.migrateSpecialToMonitor(target.name)
-    }
-    await Hypr.moveToSpecial(address)
-    refreshMonitorAnchors()
 }
 
-function show() {
-    // Set the rail's monitor first so the layer-shell anchors correctly,
-    // but DON'T compute shades yet — special:drawer isn't open, so
-    // Shade.show would mistakenly cover every monitor including the
-    // focused one. Open special first, then refresh.
-    setLauncherMonitor(resolveRailMonitor())
-    if (!Hypr.isDrawerOpen()) {
-        exec("hyprctl dispatch togglespecialworkspace drawer")
-    }
-    refreshMonitorAnchors()
-    // Seed the tracked set with whatever's already in special and re-apply
-    // saved geometry.
-    for (const c of Hypr.findInSpecial()) {
+// On first show after a daemon start, any windows already sitting in a
+// drawer special workspace (from a previous session) get tracked and
+// re-pinned to the correct monitor's special. If a previous session left
+// orphans in the wrong monitor's special, they get reassigned.
+async function adoptSpecialResidents(): Promise<void> {
+    const specials = Hypr.findInSpecial()
+    if (specials.length === 0) return
+    const mons = Hypr.monitors()
+    for (const c of specials) {
         drawerTracked.add(c.address)
+        const mon = mons.find((m) => m.id === c.monitor)
+        if (!mon) continue
+        const expected = Hypr.fullSpecialNameFor(mon.name)
+        if (c.workspace?.name !== expected) {
+            await Hypr.moveToSpecialOn(c.address, mon.name)
+        }
+    }
+}
+
+async function show() {
+    setLauncherMonitor(resolveRailMonitor())
+    // Open the per-monitor drawer special on every monitor. Each monitor's
+    // special is independent, so this is safe and idempotent. Guard the
+    // socket listener from racing focusedmon events fired by our own
+    // focusmonitor dispatches.
+    transitioning = true
+    try {
+        await Hypr.openAllDrawerSpecials()
+        await adoptSpecialResidents()
+    } catch (e) {
+        console.error("show:", e)
+    } finally {
+        transitioning = false
+    }
+    pruneDeadTracked()
+    // Refresh saved geometry for tracked windows after the adoption pass
+    // has had a chance to settle them onto regular workspaces.
+    for (const c of Hypr.clients()) {
+        if (!drawerTracked.has(c.address)) continue
         const saved = Memory.get(c.class?.toLowerCase() || "")
         if (saved) Hypr.applyGeom(c.address, saved).catch(() => {})
     }
+    refreshMonitorAnchors()
     applyLayerVisibility(true)
 }
 
-function hide() {
-    // Snapshot every window in the special workspace before we close.
-    for (const c of Hypr.findInSpecial()) {
+async function hide() {
+    // Snapshot every tracked window's geometry before closing so size/pos
+    // persists across toggles. Windows live in their monitor's drawer
+    // special; Hyprland remembers special-workspace membership across the
+    // toggle so the next open re-reveals them in place.
+    for (const c of Hypr.clients()) {
+        if (!drawerTracked.has(c.address)) continue
         const cls = c.class?.toLowerCase()
         if (!cls) continue
         Memory.update(cls, {
@@ -129,16 +155,28 @@ function hide() {
             monitor: String(c.monitor),
         })
     }
-    // Close on every monitor that has it open — covers both modes uniformly.
-    Hypr.closeSpecialOnAllMonitors().catch(() => {})
+    // Tear down the visible surfaces first so the shade is gone before
+    // any focusedmon socket events from the close sequence arrive.
     Shade.hide()
     applyLayerVisibility(false)
-    // The drawer is now closed; release tracked windows so a future drag
-    // outside the drawer doesn't snap them back in.
-    drawerTracked.clear()
+    transitioning = true
+    try {
+        await Hypr.closeAllDrawerSpecials()
+    } catch (e) {
+        console.error("hide:", e)
+    } finally {
+        transitioning = false
+    }
+    // Keep drawerTracked across hide/show so the shade keeps skipping the
+    // monitors that hold those windows on the next open. Dead entries are
+    // pruned in pruneDeadTracked()/the closewindow socket handler.
 }
 
 function toggle() {
+    // Skip if a previous show/hide is still mid-transition — the dispatch
+    // loops over monitors take long enough on multi-monitor setups that a
+    // fast double-tap could otherwise interleave show and hide.
+    if (transitioning) return
     if (Hypr.isDrawerOpen()) hide()
     else show()
 }
@@ -199,16 +237,12 @@ app.start({
         // Subscribe to Hyprland events so geometry of a window the user
         // resizes/moves while the drawer is open gets persisted live.
         listenHyprEvents()
-        // React to live blur-scope and rail-monitor changes while the
-        // drawer is open. Toggle shades on/off and (when leaving blur-all
-        // mode) evict apps from non-focused monitors before they get
-        // stranded on a hidden special workspace.
+        // Live blur-scope and rail-monitor changes: refresh shades. We no
+        // longer evict from special on mode switch — apps live in regular
+        // workspaces now, so the only thing changing is which monitors
+        // render the blur layer.
         Settings.blurAllMonitors.subscribe(() => {
-            if (!Hypr.isDrawerOpen()) return
-            if (!Settings.blurAllMonitors()) {
-                Hypr.evictSpecialFromNonFocused().catch(() => {})
-            }
-            refreshMonitorAnchors()
+            if (Hypr.isDrawerOpen()) refreshMonitorAnchors()
         })
         Settings.railMonitor.subscribe(() => {
             if (Hypr.isDrawerOpen()) refreshMonitorAnchors()
@@ -231,38 +265,46 @@ function listenHyprEvents() {
             // handle "blur on every monitor" independently of which one
             // hosts special:drawer.
             if (/^(focusedmon|moveworkspace|activespecial)>>/.test(line)) {
+                if (transitioning) return
                 if (!Hypr.isDrawerOpen()) return
                 refreshMonitorAnchors()
                 return
             }
-            // Re-trap drawer-owned windows that the user dragged out of
-            // special (e.g., by alt-dragging between monitors). The
-            // movewindow event format is `movewindow>>ADDR,WSNAME`. If we
-            // know this window belongs to the drawer but it now lives on
-            // a non-special workspace, migrate special to that monitor
-            // and pull the window back in. Layer-shell can't render
-            // normal windows above a TOP-layer shade — keeping them in
-            // special is the only way to stay in front of the blur.
-            const mv = /^movewindow>>([0-9a-fx]+),(.+)$/.exec(line)
+            // Window moved between monitors. If it's a tracked drawer
+            // window, reassign its workspace membership to the destination
+            // monitor's drawer special so the hide-away toggle keeps
+            // working. Then refresh the shade so the source monitor's blur
+            // re-renders and the destination's clears.
+            const mv = /^movewindow>>([0-9a-fx]+)/.exec(line)
             if (mv && Hypr.isDrawerOpen()) {
                 const addr = mv[1].startsWith("0x") ? mv[1] : `0x${mv[1]}`
-                const wsName = mv[2]
-                if (drawerTracked.has(addr) && !wsName.startsWith("special:drawer")) {
-                    retrapDrawerWindow(addr).catch((e) =>
-                        console.error("retrap:", e),
-                    )
-                    return
+                if (drawerTracked.has(addr)) {
+                    const c = Hypr.clients().find((x) => x.address === addr)
+                    const mons = Hypr.monitors()
+                    const mon = c ? mons.find((m) => m.id === c.monitor) : undefined
+                    if (c && mon) {
+                        const expected = Hypr.fullSpecialNameFor(mon.name)
+                        if (c.workspace?.name !== expected) {
+                            Hypr.moveToSpecialOn(c.address, mon.name).catch(() => {})
+                        }
+                    }
+                    refreshMonitorAnchors()
                 }
             }
-            // We only need a coarse trigger: any of these means "snapshot now if drawer open".
-            if (!Hypr.isDrawerOpen()) return
+            // Prune tracked entries the moment a window dies, regardless of
+            // drawer state, so we don't accumulate dead addresses across
+            // sessions.
             const cw = /^closewindow>>([0-9a-fx]+)/.exec(line)
             if (cw) {
                 const addr = cw[1].startsWith("0x") ? cw[1] : `0x${cw[1]}`
-                drawerTracked.delete(addr)
+                if (drawerTracked.delete(addr) && Hypr.isDrawerOpen()) {
+                    refreshMonitorAnchors()
+                }
             }
+            if (!Hypr.isDrawerOpen()) return
             if (/^(movewindow|resizewindow|closewindow|openwindow)>>/.test(line)) {
-                for (const c of Hypr.findInSpecial()) {
+                for (const c of Hypr.clients()) {
+                    if (!drawerTracked.has(c.address)) continue
                     const cls = c.class?.toLowerCase()
                     if (!cls) continue
                     Memory.update(cls, {

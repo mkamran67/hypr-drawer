@@ -6,6 +6,7 @@ import * as Hypr from "../service/Hypr"
 import * as Settings from "../service/Settings"
 import * as Memory from "../service/Memory"
 import * as Hotkey from "../service/Hotkey"
+import * as Usage from "../service/Usage"
 import { AppEntry } from "../service/Apps"
 
 const [query, setQuery] = createState("")
@@ -24,7 +25,16 @@ function closeDrawer() {
 }
 
 export default function Launcher() {
-    const results = createComputed(() => Apps.search(query()).slice(0, 80))
+    const results = createComputed(() => {
+        const q = query()
+        if (q.trim()) return Apps.search(q).slice(0, 120)
+        return Apps.browseList({
+            favEnabled: Settings.favoritesEnabled(),
+            recEnabled: Settings.recentsEnabled(),
+            favorites: Usage.favorites(),
+            counts: Usage.counts(),
+        }).slice(0, 200)
+    })
     const anchor = createComputed(() => Settings.anchorFor(Settings.side()))
 
     return (
@@ -64,10 +74,32 @@ export default function Launcher() {
     )
 }
 
+const VIEW_GLYPH: Record<Settings.ViewMode, string> = {
+    tiles: "▤",
+    grid: "▦",
+    compact: "≡",
+}
+
+const VIEW_TOOLTIP: Record<Settings.ViewMode, string> = {
+    tiles: "View: tiles · click for grid",
+    grid: "View: grid · click for compact list",
+    compact: "View: compact list · click for tiles",
+}
+
 function Header() {
     return (
         <box cssClasses={["launcher-header"]} spacing={6}>
             <label cssClasses={["launcher-title"]} label="Drawer" hexpand xalign={0} />
+            <button
+                cssClasses={["icon-button"]}
+                tooltipText={createComputed(() => VIEW_TOOLTIP[Settings.viewMode()])}
+                onClicked={() => Settings.cycleViewMode()}
+            >
+                <label
+                    cssClasses={["icon-glyph"]}
+                    label={createComputed(() => VIEW_GLYPH[Settings.viewMode()])}
+                />
+            </button>
             <button
                 cssClasses={["icon-button"]}
                 tooltipText="Settings"
@@ -87,6 +119,26 @@ function Header() {
 }
 
 function LauncherPage(props: { results: ReturnType<typeof createComputed<AppEntry[]>> }) {
+    let searchEntry: Gtk.Entry | null = null
+
+    function syncClearIcon(entry: Gtk.Entry) {
+        // GTK4 Entry's secondary icon doubles as our clear-X. Hiding it when
+        // the field is empty avoids a permanent dead glyph on the right.
+        if (entry.text) {
+            entry.set_icon_from_icon_name(
+                Gtk.EntryIconPosition.SECONDARY,
+                "edit-clear-symbolic",
+            )
+            entry.set_icon_tooltip_text(
+                Gtk.EntryIconPosition.SECONDARY,
+                "Clear search",
+            )
+            entry.set_icon_activatable(Gtk.EntryIconPosition.SECONDARY, true)
+        } else {
+            entry.set_icon_from_icon_name(Gtk.EntryIconPosition.SECONDARY, null)
+        }
+    }
+
     return (
         <box
             $type="named"
@@ -97,22 +149,76 @@ function LauncherPage(props: { results: ReturnType<typeof createComputed<AppEntr
             <entry
                 cssClasses={["launcher-search"]}
                 placeholderText="Search apps…"
-                onChanged={(self) => setQuery(self.text)}
+                onChanged={(self) => {
+                    setQuery(self.text)
+                    syncClearIcon(self)
+                }}
                 onActivate={() => {
                     const first = Apps.search(query())[0]
                     if (first) launch(first, 0)
                 }}
+                $={(self: Gtk.Entry) => {
+                    searchEntry = self
+                    self.connect("icon-press", (_e, pos: Gtk.EntryIconPosition) => {
+                        if (pos !== Gtk.EntryIconPosition.SECONDARY) return
+                        self.text = ""
+                        setQuery("")
+                        syncClearIcon(self)
+                        self.grab_focus()
+                    })
+                }}
             />
             <Gtk.ScrolledWindow hexpand vexpand>
-                <box orientation={Gtk.Orientation.VERTICAL} spacing={4}>
-                    <For each={props.results}>
-                        {(app: AppEntry) => <AppTile app={app} onLaunch={launch} />}
-                    </For>
-                </box>
+                <Gtk.Stack
+                    visibleChildName={createComputed(() => Settings.viewMode())}
+                    transitionType={Gtk.StackTransitionType.CROSSFADE}
+                    transitionDuration={120}
+                >
+                    <box
+                        $type="named"
+                        name="tiles"
+                        orientation={Gtk.Orientation.VERTICAL}
+                        spacing={4}
+                    >
+                        <For each={props.results}>
+                            {(app: AppEntry) => (
+                                <AppTile app={app} onLaunch={launch} mode="tiles" />
+                            )}
+                        </For>
+                    </box>
+                    <Gtk.FlowBox
+                        $type="named"
+                        name="grid"
+                        homogeneous
+                        selectionMode={Gtk.SelectionMode.NONE}
+                        minChildrenPerLine={3}
+                        maxChildrenPerLine={6}
+                        rowSpacing={4}
+                        columnSpacing={4}
+                    >
+                        <For each={props.results}>
+                            {(app: AppEntry) => (
+                                <AppTile app={app} onLaunch={launch} mode="grid" />
+                            )}
+                        </For>
+                    </Gtk.FlowBox>
+                    <box
+                        $type="named"
+                        name="compact"
+                        orientation={Gtk.Orientation.VERTICAL}
+                        spacing={2}
+                    >
+                        <For each={props.results}>
+                            {(app: AppEntry) => (
+                                <AppTile app={app} onLaunch={launch} mode="compact" />
+                            )}
+                        </For>
+                    </box>
+                </Gtk.Stack>
             </Gtk.ScrolledWindow>
             <label
                 cssClasses={["launcher-hint"]}
-                label="Drag → move into drawer · Shift+drag → new instance"
+                label="Drag → move into drawer · Shift+drag → new · Right-click → favorite"
             />
         </box>
     )
@@ -315,6 +421,36 @@ function SettingsPage() {
                         wrap
                     />
 
+                    <label cssClasses={["settings-section"]} label="Suggestions" xalign={0} />
+                    <Gtk.CheckButton
+                        label="Enable favorites (pinned to top)"
+                        active={createComputed(() => Settings.favoritesEnabled())}
+                        $={(self: Gtk.CheckButton) => {
+                            self.connect("toggled", () => {
+                                if (self.get_active() !== Settings.favoritesEnabled()) {
+                                    Settings.setFavoritesEnabled(self.get_active())
+                                }
+                            })
+                        }}
+                    />
+                    <Gtk.CheckButton
+                        label="Enable most-used (sort by launch frequency)"
+                        active={createComputed(() => Settings.recentsEnabled())}
+                        $={(self: Gtk.CheckButton) => {
+                            self.connect("toggled", () => {
+                                if (self.get_active() !== Settings.recentsEnabled()) {
+                                    Settings.setRecentsEnabled(self.get_active())
+                                }
+                            })
+                        }}
+                    />
+                    <label
+                        cssClasses={["launcher-hint"]}
+                        label="Right-click any app to toggle it as a favorite. Most-used reorders the rest of the list by how often you've launched each app from the drawer."
+                        xalign={0}
+                        wrap
+                    />
+
                     <label cssClasses={["settings-section"]} label="Toggle hotkey" xalign={0} />
                     <box orientation={Gtk.Orientation.HORIZONTAL} spacing={6}>
                         <button
@@ -479,12 +615,40 @@ function SideRadio(props: { value: Settings.DrawerSide; label: string }) {
 }
 
 async function launch(app: AppEntry, modifiers: number) {
+    Usage.recordLaunch(app.desktopId)
     const forceNew = !!(modifiers & (Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.CONTROL_MASK))
-    if (forceNew) {
-        await Hypr.spawnInSpecial(app.exec)
-        return
+
+    // Per-monitor drawer specials: launched apps go into the focused
+    // monitor's `special:drawer-<name>` workspace, so they hide-away with
+    // the drawer toggle and never get caught in a single-instance special
+    // migration race.
+    const targetMon = Hypr.focusedMonitor()
+
+    const track = (addr: string) => {
+        const fn = (globalThis as any).__hyprDrawerTrack
+        if (typeof fn === "function") try { fn(addr) } catch (e) { console.error(e) }
     }
-    const existing = Hypr.findByClass(app.wmClass)
-    if (existing) await Hypr.moveToSpecial(existing.address)
-    else await Hypr.spawnInSpecial(app.exec)
+    const refresh = () => {
+        const fn = (globalThis as any).__hyprDrawerRefresh
+        if (typeof fn === "function") try { fn() } catch (e) { console.error(e) }
+    }
+
+    if (!forceNew) {
+        const existing = Hypr.findByClass(app.wmClass)
+        if (existing) {
+            track(existing.address)
+            if (targetMon) {
+                await Hypr.moveToSpecialOn(existing.address, targetMon.name)
+            }
+            refresh()
+            return
+        }
+    }
+
+    if (targetMon) {
+        await Hypr.spawnInSpecialOn(app.exec, targetMon.name)
+    } else {
+        await Hypr.dispatch(`exec [float] ${app.exec}`)
+    }
+    refresh()
 }
