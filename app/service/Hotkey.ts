@@ -44,7 +44,11 @@ export function ensureFile(): void {
 }
 
 // Swap the live keybind AND persist it. Old combo is unbound at runtime so
-// it stops responding without needing a Hyprland reload.
+// it stops responding without needing a Hyprland reload. We also unbind the
+// *new* combo first — Hyprland's `hyprctl keyword bind` appends rather than
+// replaces, so without this any leftover bind from the sourced conf-file
+// would coexist with our new runtime bind and the toggle would fire twice
+// per keypress.
 export async function apply(oldCombo: string, newCombo: string): Promise<void> {
     Settings.setHotkey(newCombo)
     writeFile(newCombo)
@@ -52,6 +56,7 @@ export async function apply(oldCombo: string, newCombo: string): Promise<void> {
         if (oldCombo && oldCombo !== newCombo) {
             await execAsync(`hyprctl keyword unbind ${oldCombo}`)
         }
+        await execAsync(`hyprctl keyword unbind ${newCombo}`)
         await execAsync(`hyprctl keyword bind ${newCombo}, exec, ${toggleCmd()}`)
     } catch (e) {
         console.error("Hotkey.apply:", e)

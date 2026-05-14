@@ -111,26 +111,78 @@ function LauncherPage(props: { results: ReturnType<typeof createComputed<AppEntr
 }
 
 function SettingsPage() {
-    let hotkeyEntry: Gtk.Entry | null = null
     let statusLabel: Gtk.Label | null = null
     let widthSpin: Gtk.SpinButton | null = null
     let defaultWSpin: Gtk.SpinButton | null = null
     let defaultHSpin: Gtk.SpinButton | null = null
+    let captureButton: Gtk.Button | null = null
+    let captureLabel: Gtk.Label | null = null
+    let saveButton: Gtk.Button | null = null
+
+    // Pending hotkey is the value displayed on the capture button — only
+    // committed to disk + applied to Hyprland when the user clicks Save.
+    let pendingHotkey = Settings.hotkey()
+    let capturing = false
 
     function setStatus(msg: string) {
         if (statusLabel) statusLabel.label = msg
     }
 
-    async function applyHotkey() {
-        if (!hotkeyEntry) return
-        const next = hotkeyEntry.text.trim()
-        if (!next.includes(",")) {
-            setStatus("Hotkey must look like 'SUPER CTRL, R'.")
-            return
+    function refreshCaptureUi() {
+        if (captureLabel) {
+            captureLabel.label = capturing ? "Press keys…" : pendingHotkey || "Click to capture"
         }
-        const previous = Settings.hotkey()
-        await Hotkey.apply(previous, next)
-        setStatus(`Hotkey set to ${next}.`)
+        if (captureButton) {
+            const cls = capturing
+                ? ["icon-button", "hotkey-capture", "capturing"]
+                : ["icon-button", "hotkey-capture"]
+            captureButton.set_css_classes(cls)
+        }
+        if (saveButton) {
+            saveButton.sensitive = !!pendingHotkey && pendingHotkey !== Settings.hotkey()
+        }
+    }
+
+    function isModifierOnly(keyval: number): boolean {
+        return (
+            keyval === Gdk.KEY_Control_L || keyval === Gdk.KEY_Control_R ||
+            keyval === Gdk.KEY_Shift_L   || keyval === Gdk.KEY_Shift_R   ||
+            keyval === Gdk.KEY_Alt_L     || keyval === Gdk.KEY_Alt_R     ||
+            keyval === Gdk.KEY_Super_L   || keyval === Gdk.KEY_Super_R   ||
+            keyval === Gdk.KEY_Meta_L    || keyval === Gdk.KEY_Meta_R    ||
+            keyval === Gdk.KEY_Hyper_L   || keyval === Gdk.KEY_Hyper_R
+        )
+    }
+
+    function formatCombo(state: number, keyval: number): string {
+        const M = Gdk.ModifierType
+        const mods: string[] = []
+        if (state & M.SUPER_MASK)   mods.push("SUPER")
+        if (state & M.CONTROL_MASK) mods.push("CTRL")
+        if (state & M.ALT_MASK)     mods.push("ALT")
+        if (state & M.SHIFT_MASK)   mods.push("SHIFT")
+        if (state & M.META_MASK)    mods.push("META")
+        let name = Gdk.keyval_name(keyval) ?? ""
+        // Keyvals 0x1008FF00–0x1008FFFF are the "XFree86 vendor" keysym block
+        // (multimedia / launch / extra-function keys). GTK reports the short
+        // tail of the name (e.g. "Launch5"), but Hyprland matches the full
+        // "XF86Launch5" form — so the bind misses unless we re-add the prefix.
+        if (
+            keyval >= 0x1008ff00 &&
+            keyval <= 0x1008ffff &&
+            name &&
+            !name.startsWith("XF86")
+        ) {
+            name = `XF86${name}`
+        }
+        return `${mods.join(" ")}, ${name}`
+    }
+
+    function startCapture() {
+        capturing = true
+        refreshCaptureUi()
+        captureButton?.grab_focus()
+        setStatus("Listening for your new hotkey — press Escape to cancel.")
     }
 
     function clearPositions() {
@@ -138,16 +190,23 @@ function SettingsPage() {
         setStatus("Cleared saved window positions.")
     }
 
+    async function saveHotkey() {
+        if (!pendingHotkey || pendingHotkey === Settings.hotkey()) return
+        const previous = Settings.hotkey()
+        await Hotkey.apply(previous, pendingHotkey)
+        setStatus(`Hotkey set to ${pendingHotkey}.`)
+        refreshCaptureUi()
+    }
+
     async function resetAll() {
         const previousHotkey = Settings.hotkey()
         Settings.reset()
-        // Push the (now-default) values back into the live SpinButton widgets
-        // so the UI tracks the reset; createComputed-backed radios update on
-        // their own.
         widthSpin?.set_value(Settings.width())
         defaultWSpin?.set_value(Settings.defaultW())
         defaultHSpin?.set_value(Settings.defaultH())
-        if (hotkeyEntry) hotkeyEntry.text = Settings.hotkey()
+        pendingHotkey = Settings.hotkey()
+        capturing = false
+        refreshCaptureUi()
         await Hotkey.apply(previousHotkey, Settings.hotkey())
         setStatus("Settings reset to defaults.")
     }
@@ -220,29 +279,83 @@ function SettingsPage() {
 
                     <label cssClasses={["settings-section"]} label="Toggle hotkey" xalign={0} />
                     <box orientation={Gtk.Orientation.HORIZONTAL} spacing={6}>
-                        <entry
-                            cssClasses={["launcher-search"]}
-                            placeholderText="e.g. SUPER CTRL, R"
+                        <button
+                            cssClasses={["icon-button", "hotkey-capture"]}
                             hexpand
-                            $={(self: Gtk.Entry) => {
-                                hotkeyEntry = self
-                                self.text = Settings.hotkey()
-                                self.connect("activate", () => {
-                                    applyHotkey().catch(console.error)
-                                })
+                            tooltipText="Click, then press the new combo"
+                            onClicked={() => startCapture()}
+                            $={(self: Gtk.Button) => {
+                                captureButton = self
+                                const keyCtl = new Gtk.EventControllerKey()
+                                // CAPTURE phase so we win over the launcher
+                                // window's Escape→close handler while
+                                // we're listening for a new combo.
+                                keyCtl.propagationPhase = Gtk.PropagationPhase.CAPTURE
+                                keyCtl.connect(
+                                    "key-pressed",
+                                    (_c, keyval: number, keycode: number, state: number) => {
+                                        if (!capturing) return false
+                                        if (keyval === Gdk.KEY_Escape) {
+                                            capturing = false
+                                            refreshCaptureUi()
+                                            setStatus("Capture cancelled.")
+                                            return true
+                                        }
+                                        if (isModifierOnly(keyval)) return true
+                                        const name = Gdk.keyval_name(keyval)
+                                        const hex = "0x" + keyval.toString(16)
+                                        console.log(
+                                            `hotkey capture: keyval=${hex} ` +
+                                            `keycode=${keycode} name=${name}`,
+                                        )
+                                        if (!name) {
+                                            setStatus(
+                                                `Captured key has no keysym name ` +
+                                                `(keyval=${hex}, keycode=${keycode}). ` +
+                                                `Hyprland can't bind it by name — try a ` +
+                                                `different key.`,
+                                            )
+                                            capturing = false
+                                            refreshCaptureUi()
+                                            return true
+                                        }
+                                        pendingHotkey = formatCombo(state, keyval)
+                                        capturing = false
+                                        refreshCaptureUi()
+                                        setStatus(
+                                            `Captured ${pendingHotkey} ` +
+                                            `(keyval=${hex}, keycode=${keycode}). ` +
+                                            `Click Save to apply.`,
+                                        )
+                                        return true
+                                    },
+                                )
+                                self.add_controller(keyCtl)
                             }}
-                        />
+                        >
+                            <label
+                                cssClasses={["icon-glyph"]}
+                                label={Settings.hotkey() || "Click to capture"}
+                                $={(self: Gtk.Label) => {
+                                    captureLabel = self
+                                }}
+                            />
+                        </button>
                         <button
                             cssClasses={["icon-button"]}
-                            tooltipText="Apply hotkey"
-                            onClicked={() => applyHotkey().catch(console.error)}
+                            tooltipText="Save the captured hotkey"
+                            onClicked={() => saveHotkey().catch(console.error)}
+                            $={(self: Gtk.Button) => {
+                                saveButton = self
+                                self.sensitive = false
+                            }}
                         >
-                            <label cssClasses={["icon-glyph"]} label="Apply" />
+                            <label cssClasses={["icon-glyph"]} label="Save" />
                         </button>
                     </box>
                     <label
                         cssClasses={["launcher-hint"]}
-                        label='Format: "MODS, KEY" — modifiers separated by spaces. Press Enter or Apply.'
+                        label="Click the field, press the combo you want, then Save."
                         xalign={0}
                         wrap
                     />

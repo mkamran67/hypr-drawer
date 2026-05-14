@@ -58,6 +58,22 @@ function toggle() {
 // Exposed so widgets (close button) can hide the drawer.
 ;(globalThis as any).__hyprDrawerHide = hide
 
+// Coalesce rapid duplicate toggle requests. Hyprland occasionally fires a
+// bind twice in quick succession when a conf-sourced bind overlaps with one
+// installed via `hyprctl keyword bind`. With no debounce that flicker-opens
+// then flicker-closes the drawer on a single keypress; 200ms is comfortably
+// longer than any legitimate human re-press and short enough to not feel
+// laggy.
+const DEBOUNCE_MS = 200
+let lastToggleAt = 0
+function maybeToggle(): boolean {
+    const now = GLib.get_monotonic_time() / 1000 // µs → ms
+    if (now - lastToggleAt < DEBOUNCE_MS) return false
+    lastToggleAt = now
+    toggle()
+    return true
+}
+
 app.start({
     css: style,
     instanceName: "hypr-drawer",
@@ -65,8 +81,7 @@ app.start({
         const cmd = (argv[0] ?? "").trim()
         switch (cmd) {
             case "toggle":
-                toggle()
-                response("ok")
+                response(maybeToggle() ? "ok" : "debounced")
                 break
             case "show":
                 show()

@@ -106,6 +106,17 @@ window.drawer-dropzone {
   padding: 8px;
 }
 
+.hotkey-capture {
+  padding: 8px 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.hotkey-capture.capturing {
+  background: rgba(120, 160, 220, 0.25);
+  border: 1px dashed rgba(180, 210, 255, 0.7);
+}
+
 .drop-preview-size {
   color: #fff;
   font-size: 13px;
