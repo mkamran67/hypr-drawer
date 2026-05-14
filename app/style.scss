@@ -1,0 +1,39 @@
+window.drawer-launcher {
+  background: rgba(20, 22, 28, 0.55);
+  color: #e6e6e6;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.launcher-root {
+  padding: 12px;
+}
+
+.launcher-search {
+  padding: 8px 12px;
+  font-size: 14px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  border: none;
+}
+
+.app-tile {
+  padding: 8px;
+  border-radius: 10px;
+  background: transparent;
+  border: none;
+}
+
+.app-tile:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.launcher-hint {
+  font-size: 11px;
+  opacity: 0.6;
+  padding: 4px;
+}
+
+window.drawer-dropzone {
+  background: transparent;
+}

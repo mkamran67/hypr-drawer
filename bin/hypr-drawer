@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Thin CLI wrapper: hypr-drawer {daemon|toggle|show|hide|quit}
+set -euo pipefail
+
+APP_DIR="${HYPR_DRAWER_APP_DIR:-$HOME/.local/share/hypr-drawer}"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/hypr-drawer"
+LOG="$STATE_DIR/daemon.log"
+INSTANCE="hypr-drawer"
+
+mkdir -p "$STATE_DIR"
+
+cmd="${1:-toggle}"
+
+case "$cmd" in
+    daemon)
+        # Foreground daemon: tee stderr+stdout to the log so `hypr-drawer daemon`
+        # still prints to the controlling terminal while leaving a trail behind.
+        exec ags run "$APP_DIR/app.ts" --gtk 4 2>&1 | tee -a "$LOG"
+        ;;
+    toggle|show|hide|quit)
+        # If no daemon is running yet, start it in the background and retry.
+        # Daemon stderr lands in $LOG so post-mortem debugging is possible.
+        if ! ags request -i "$INSTANCE" "$cmd" >/dev/null 2>&1; then
+            setsid ags run "$APP_DIR/app.ts" --gtk 4 >>"$LOG" 2>&1 &
+            # Cold-start of gjs from nix store can take a couple seconds; give
+            # it up to 4s before declaring failure.
+            for _ in $(seq 1 20); do
+                sleep 0.2
+                ags request -i "$INSTANCE" "$cmd" >/dev/null 2>&1 && exit 0
+            done
+            echo "hypr-drawer: daemon failed to start. See $LOG" >&2
+            exit 1
+        fi
+        ;;
+    *)
+        echo "usage: hypr-drawer {daemon|toggle|show|hide|quit}" >&2
+        exit 2
+        ;;
+esac

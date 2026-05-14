@@ -1,0 +1,15 @@
+{
+  "$schema": "https://aylur.github.io/ags/schema.json",
+  "compilerOptions": {
+    "experimentalDecorators": true,
+    "strict": false,
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "jsxImportSource": "ags/gtk4",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "lib": ["ES2022"]
+  }
+}
