@@ -40,3 +40,7 @@ export function update(cls: string, geom: Geometry): void {
 export function get(cls: string): Geometry | undefined {
     return load()[cls]
 }
+
+export function clear(): void {
+    save({})
+}

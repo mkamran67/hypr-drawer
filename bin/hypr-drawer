@@ -2,6 +2,13 @@
 # Thin CLI wrapper: hypr-drawer {daemon|toggle|show|hide|quit}
 set -euo pipefail
 
+# Hyprland often starts with a minimal PATH that omits ~/.nix-profile/bin
+# and ~/.local/bin, which would make `ags` unfindable when this wrapper is
+# triggered from a keybind. Prepend the usual user locations so the rest of
+# the script doesn't have to care.
+PATH="$HOME/.nix-profile/bin:$HOME/.local/bin:/nix/var/nix/profiles/default/bin:$PATH"
+export PATH
+
 APP_DIR="${HYPR_DRAWER_APP_DIR:-$HOME/.local/share/hypr-drawer}"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/hypr-drawer"
 LOG="$STATE_DIR/daemon.log"
@@ -17,14 +24,20 @@ case "$cmd" in
         # still prints to the controlling terminal while leaving a trail behind.
         exec ags run "$APP_DIR/app.ts" --gtk 4 2>&1 | tee -a "$LOG"
         ;;
-    toggle|show|hide|quit)
+    quit)
+        # Nothing to do if the daemon isn't running — don't cold-start a
+        # daemon just to immediately kill it.
+        ags request -i "$INSTANCE" quit >/dev/null 2>&1 || true
+        ;;
+    toggle|show|hide)
         # If no daemon is running yet, start it in the background and retry.
         # Daemon stderr lands in $LOG so post-mortem debugging is possible.
         if ! ags request -i "$INSTANCE" "$cmd" >/dev/null 2>&1; then
             setsid ags run "$APP_DIR/app.ts" --gtk 4 >>"$LOG" 2>&1 &
             # Cold-start of gjs from nix store can take a couple seconds; give
-            # it up to 4s before declaring failure.
-            for _ in $(seq 1 20); do
+            # it up to 10s before declaring failure (Gtk theme parsing on a
+            # cold cache occasionally pushes past the old 4s window).
+            for _ in $(seq 1 50); do
                 sleep 0.2
                 ags request -i "$INSTANCE" "$cmd" >/dev/null 2>&1 && exit 0
             done

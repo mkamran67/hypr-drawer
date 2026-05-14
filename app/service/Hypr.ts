@@ -13,6 +13,14 @@ export type Client = {
     monitor: number
 }
 
+export function cursorPos(): { x: number; y: number } | null {
+    try {
+        return JSON.parse(exec("hyprctl cursorpos -j")) as { x: number; y: number }
+    } catch {
+        return null
+    }
+}
+
 export function clients(): Client[] {
     try {
         return JSON.parse(exec("hyprctl clients -j")) as Client[]
@@ -30,6 +38,21 @@ export function findByClass(cls: string): Client | undefined {
 
 export function findInSpecial(): Client[] {
     return clients().filter((c) => c.workspace?.name === SPECIAL)
+}
+
+// Single source of truth for "is the drawer overlay currently visible?".
+// Reads Hyprland directly rather than trusting an in-process flag — that
+// flag would desync if anything else (another keybind, daemon restart,
+// session lock cycle) toggled the special workspace behind our back.
+export function isDrawerOpen(): boolean {
+    try {
+        const monitors = JSON.parse(exec("hyprctl monitors -j")) as Array<{
+            specialWorkspace?: { name: string }
+        }>
+        return monitors.some((m) => m.specialWorkspace?.name === SPECIAL)
+    } catch {
+        return false
+    }
 }
 
 export async function dispatch(args: string): Promise<string> {
@@ -55,4 +78,8 @@ export async function applyGeom(
 ): Promise<void> {
     await dispatch(`resizewindowpixel exact ${geom.w} ${geom.h},address:${address}`)
     await dispatch(`movewindowpixel exact ${geom.x} ${geom.y},address:${address}`)
+}
+
+export async function movePixel(address: string, x: number, y: number): Promise<void> {
+    await dispatch(`movewindowpixel exact ${x} ${y},address:${address}`)
 }

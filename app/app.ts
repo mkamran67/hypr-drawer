@@ -2,32 +2,36 @@ import app from "ags/gtk4/app"
 import { exec, subprocess } from "ags/process"
 import GLib from "gi://GLib"
 import Launcher from "./widget/Launcher"
-import DropZone from "./widget/DropZone"
 import * as Hypr from "./service/Hypr"
 import * as Memory from "./service/Memory"
+import * as Preview from "./service/Preview"
+import * as Hotkey from "./service/Hotkey"
 import style from "./style.scss"
 
-// State the daemon owns.
+// State the daemon owns. The drawer's "visible" status is NOT stored as a
+// local flag — that desyncs whenever anything else (another keybind, a
+// daemon restart, a lock cycle) touches the special workspace. We always
+// read the truth from Hyprland via Hypr.isDrawerOpen() before acting.
 let launcherWin: any = null
-let dropzoneWin: any = null
-let visible = false
+
+function applyLayerVisibility(want: boolean) {
+    if (launcherWin) launcherWin.visible = want
+}
 
 function show() {
-    if (!launcherWin || !dropzoneWin) return
-    // 1. Open the special workspace (or focus it if hidden).
-    exec("hyprctl dispatch togglespecialworkspace drawer")
-    // 2. Re-apply saved geometry to anything already living there.
+    // Only open the special workspace if it isn't already showing.
+    if (!Hypr.isDrawerOpen()) {
+        exec("hyprctl dispatch togglespecialworkspace drawer")
+    }
+    // Re-apply saved geometry to anything already living there.
     for (const c of Hypr.findInSpecial()) {
         const saved = Memory.get(c.class?.toLowerCase() || "")
         if (saved) Hypr.applyGeom(c.address, saved).catch(() => {})
     }
-    launcherWin.visible = true
-    dropzoneWin.visible = true
-    visible = true
+    applyLayerVisibility(true)
 }
 
 function hide() {
-    if (!launcherWin || !dropzoneWin) return
     // Snapshot every window in the special workspace before we close.
     for (const c of Hypr.findInSpecial()) {
         const cls = c.class?.toLowerCase()
@@ -40,16 +44,19 @@ function hide() {
             monitor: String(c.monitor),
         })
     }
-    exec("hyprctl dispatch togglespecialworkspace drawer")
-    launcherWin.visible = false
-    dropzoneWin.visible = false
-    visible = false
+    if (Hypr.isDrawerOpen()) {
+        exec("hyprctl dispatch togglespecialworkspace drawer")
+    }
+    applyLayerVisibility(false)
 }
 
 function toggle() {
-    if (visible) hide()
+    if (Hypr.isDrawerOpen()) hide()
     else show()
 }
+
+// Exposed so widgets (close button) can hide the drawer.
+;(globalThis as any).__hyprDrawerHide = hide
 
 app.start({
     css: style,
@@ -79,7 +86,8 @@ app.start({
     },
     main() {
         launcherWin = Launcher()
-        dropzoneWin = DropZone({ onClose: hide })
+        Preview.init()
+        Hotkey.ensureFile()
         // Subscribe to Hyprland events so geometry of a window the user
         // resizes/moves while the drawer is open gets persisted live.
         listenHyprEvents()
@@ -95,7 +103,7 @@ function listenHyprEvents() {
         ["socat", "-U", "-", `UNIX-CONNECT:${sock}`],
         (line: string) => {
             // We only need a coarse trigger: any of these means "snapshot now if drawer open".
-            if (!visible) return
+            if (!Hypr.isDrawerOpen()) return
             if (/^(movewindow|resizewindow|closewindow|openwindow)>>/.test(line)) {
                 for (const c of Hypr.findInSpecial()) {
                     const cls = c.class?.toLowerCase()

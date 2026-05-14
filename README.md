@@ -25,12 +25,30 @@ Under the hood it's a thin layer on top of Hyprland primitives:
 - **Geometry** is persisted to `~/.local/state/hypr-drawer/positions.json` keyed
   by window class.
 
-## Install
+## Requirements
 
-Requires **AGS v2 (Astal)** or **AGS v3 (ags 3.x)**. If a stray v1 `ags`
-exists at `/usr/local/bin/ags` (from an older manual install), remove it or
-put a newer ags earlier on PATH first — the installer will refuse to proceed
-otherwise.
+- **Hyprland** (any recent version).
+- **Nix** with flakes enabled. The installer pulls AGS v3 from
+  [Aylur's flake](https://github.com/Aylur/ags) — the only source where v3
+  is reliably packaged today. Nixpkgs / AUR / COPR all still ship the v2
+  line which has an incompatible API.
+- `socat` and `jq` (installed by your distro's package manager).
+- ~600 MB of disk for the first Nix install (cached after that).
+
+If you don't have Nix yet, install it first:
+
+```bash
+# Determinate Systems installer (recommended for non-NixOS):
+curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
+
+# …or the upstream multi-user installer:
+sh <(curl -L https://nixos.org/nix/install) --daemon
+```
+
+Make sure `~/.nix-profile/bin` is on your `PATH` (the Nix installer normally
+adds this to your shell rc; open a new shell after installing).
+
+## Install
 
 ```bash
 git clone <this-repo> hypr-drawer
@@ -40,38 +58,37 @@ cd hypr-drawer
 
 The installer:
 
-1. Detects your distro (`pacman` / `apt` / `dnf` / `zypper` / `nix`).
-2. Installs runtime deps (`ags`, `socat`, `jq`) and verifies the `ags`
-   version on PATH is ≥ 2.x.
-3. Drops `~/.config/hypr/drawer.conf` and adds **one** `source = …` line to
+1. Installs `socat` and `jq` via your distro PM (`pacman`/`apt`/`dnf`/`zypper`).
+2. Installs **AGS v3** into your Nix profile from
+   `github:Aylur/ags#agsFull` (bundles ags, astal4/GTK4, the apps service,
+   the Hyprland module). Idempotent: re-running upgrades in place.
+3. Verifies `ags --version` ≥ 3.x.
+4. Drops `~/.config/hypr/drawer.conf` and adds **one** `source = …` line to
    `hyprland.conf` (idempotent — safe to re-run).
-4. Installs the daemon to `~/.local/share/hypr-drawer` and a CLI wrapper to
+5. Installs the daemon to `~/.local/share/hypr-drawer` and a CLI wrapper to
    `~/.local/bin/hypr-drawer`.
-5. Runs `hyprctl reload`.
+6. Runs `hyprctl reload`.
 
 User-level only. The only `sudo` is whatever your package manager needs for
-runtime deps.
+`socat`/`jq`. Everything else lands under `~/.nix-profile` and `~/.local`.
 
-### Notes per distro
+### Why Nix even on Arch/Fedora?
 
-- **Arch**: AGS comes from the AUR (`aylurs-gtk-shell-git`). Installer uses
-  `paru`/`yay` if present; otherwise tells you how to build it.
-- **Fedora**: AGS via COPR `errornointernet/packages`.
-- **Debian/Ubuntu/openSUSE**: no official AGS package. Use Nix
-  (`nix profile install nixpkgs#ags`) or build from source.
-- **NixOS**: just `nix-env -iA nixpkgs.ags`.
+AGS v3 isn't in any distro repo yet. Aylur's flake is currently the only
+place that ships v3 with all the Astal-4.0 (GTK4) typelibs wired up.
+Once it lands in nixpkgs/AUR/COPR we'll switch to using those.
 
 ## Usage
 
 | Action | Result |
 |---|---|
-| `SUPER + HOME` | Toggle the drawer (open or hide). |
+| `SUPER + CTRL + R` | Toggle the drawer (open or hide). |
 | Type in search bar | Fuzzy filter apps by name. |
 | **Drag** an app tile onto the workspace | If that app is already running on any workspace, **moves** that window into the drawer. Otherwise launches a new instance. |
 | **Shift+Drag** (or Ctrl+Drag) | Always launches a new instance into the drawer. |
 | Click an app tile | Same as plain drag: move-if-running, otherwise launch. |
 | Resize/move a window inside the drawer | Geometry is saved per class — same app reopens at the same spot. |
-| `SUPER + HOME` again | Hides the drawer. Apps keep running in the background. |
+| `SUPER + CTRL + R` again | Hides the drawer. Apps keep running in the background. |
 
 ## Rebind
 

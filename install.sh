@@ -48,6 +48,19 @@ install -Dm755 "$SCRIPT_DIR/bin/hypr-drawer" "$BIN_DIR/hypr-drawer"
 say "Installing $DRAWER_CONF"
 install -Dm644 "$SCRIPT_DIR/config/drawer.conf" "$DRAWER_CONF"
 
+# 6b. Seed the managed keybind file so Hyprland's `source = ...drawer-bind.conf`
+#     resolves on first load. The daemon rewrites this file whenever the user
+#     changes the hotkey from the settings UI.
+DRAWER_BIND_CONF="$HYPR_CONF_DIR/drawer-bind.conf"
+if [ ! -f "$DRAWER_BIND_CONF" ]; then
+    say "Seeding default keybind → $DRAWER_BIND_CONF"
+    cat > "$DRAWER_BIND_CONF" <<EOF
+# Managed by hypr-drawer — edit via the in-app settings, not here.
+unbind = SUPER CTRL, R
+bind = SUPER CTRL, R, exec, $BIN_DIR/hypr-drawer toggle
+EOF
+fi
+
 # 7. Idempotently hook into hyprland.conf
 touch "$HYPR_CONF"
 if grep -Fxq "$SOURCE_LINE" "$HYPR_CONF"; then
@@ -77,7 +90,8 @@ cat <<EOF
 
 ✓ hypr-drawer installed.
 
-  Toggle:        SUPER + HOME    (change in $DRAWER_CONF)
+  Toggle:        SUPER + CTRL + R   (change in $DRAWER_CONF)
+  ags version:   $(ags --version 2>&1 | head -1)
   State file:    $STATE_DIR/positions.json
   Uninstall:     $SCRIPT_DIR/uninstall.sh
 
