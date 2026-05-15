@@ -11,6 +11,8 @@ sizes and positions are remembered per app class.
 It's a place to park "background" apps (Spotify, Discord, a notes window, a
 chat client) without giving them real estate on your tiled workspaces.
 
+![hypr-drawer screenshot](docs/screenshot.png)
+
 > ⚠️ **Status: experimental.** This is a personal project that's usable but
 > rough. The blur overlay can flicker during monitor transitions, some UI
 > polish is missing, and edge cases around multi-monitor focus can leave the
