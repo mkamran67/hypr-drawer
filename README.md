@@ -11,19 +11,29 @@ sizes and positions are remembered per app class.
 It's a place to park "background" apps (Spotify, Discord, a notes window, a
 chat client) without giving them real estate on your tiled workspaces.
 
+> ⚠️ **Status: experimental.** This is a personal project that's usable but
+> rough. The blur overlay can flicker during monitor transitions, some UI
+> polish is missing, and edge cases around multi-monitor focus can leave the
+> drawer in a weird state. See the latest commit messages for current known
+> issues. PRs and bug reports welcome.
+
 ## How it works
 
 Under the hood it's a thin layer on top of Hyprland primitives:
 
-- **Special workspaces** (`togglespecialworkspace`) provide the show/hide
+- **Special workspace** (`togglespecialworkspace`) provides the show/hide
   scratchpad behavior — Hyprland already remembers windows in there.
-- **`windowrulev2 = float, workspace:special:drawer`** keeps every window in
+- **`windowrule = float, workspace:special:drawer`** keeps every window in
   the drawer floating.
-- **Blur** is enabled for the special workspace via `decoration { blur { special = true } }`.
-- A small **GTK4 layer-shell daemon** (built with [AGS v2 / Astal](https://github.com/Aylur/ags))
-  draws the launcher rail and handles drag-and-drop.
+- **Per-monitor blur shades**: a named special workspace is single-instance
+  in Hyprland (toggling it on one monitor pulls it off the others), so
+  instead of relying on `decoration { blur { special = true } }` alone, the
+  daemon paints a transparent GTK4 layer-shell overlay on every monitor and
+  uses `layerrule = blur` to get a consistent blurred backdrop everywhere.
+- A **GTK4 layer-shell daemon** (built with [AGS v3 / Astal](https://github.com/Aylur/ags))
+  draws the launcher rail, settings panel, and handles drag-and-drop.
 - **Geometry** is persisted to `~/.local/state/hypr-drawer/positions.json` keyed
-  by window class.
+  by window class. App usage frequency is tracked separately for ranking.
 
 ## Requirements
 
@@ -82,17 +92,23 @@ Once it lands in nixpkgs/AUR/COPR we'll switch to using those.
 
 | Action | Result |
 |---|---|
-| `SUPER + CTRL + R` | Toggle the drawer (open or hide). |
-| Type in search bar | Fuzzy filter apps by name. |
-| **Drag** an app tile onto the workspace | If that app is already running on any workspace, **moves** that window into the drawer. Otherwise launches a new instance. |
+| `SUPER + CTRL + R` (default) | Toggle the drawer (open or hide). |
+| Type in search bar | Fuzzy filter apps by name; ranked by usage frequency. |
+| **Drag** an app tile onto the workspace | If that app is already running on any workspace, **moves** that window into the drawer. Otherwise launches a new instance at the drop point. |
 | **Shift+Drag** (or Ctrl+Drag) | Always launches a new instance into the drawer. |
 | Click an app tile | Same as plain drag: move-if-running, otherwise launch. |
 | Resize/move a window inside the drawer | Geometry is saved per class — same app reopens at the same spot. |
+| Open the settings panel | Edit the toggle shortcut, tweak preferences. |
 | `SUPER + CTRL + R` again | Hides the drawer. Apps keep running in the background. |
 
 ## Rebind
 
-Edit `~/.config/hypr/drawer.conf` and change the `bind = …` line.
+Two options:
+
+- **In-app**: open the drawer, click the settings cog, and use the keyboard
+  shortcut editor (supports F13–F24 and other extended keys).
+- **By hand**: edit `~/.config/hypr/drawer.conf` and change the `bind = …`
+  line, then `hyprctl reload`.
 
 ## State
 
@@ -106,7 +122,8 @@ Edit `~/.config/hypr/drawer.conf` and change the `bind = …` line.
 ```
 
 Delete an entry to forget a window's position; delete the file to forget
-everything.
+everything. Settings and usage stats are stored alongside in the same
+`~/.local/state/hypr-drawer/` directory.
 
 ## Uninstall
 
@@ -132,10 +149,17 @@ hypr-drawer quit
 - **Nothing happens on keybind.** Check `pgrep -af 'ags.*hypr-drawer'`. If
   empty, look at `~/.local/state/hypr-drawer/daemon.log` for the last failed
   start, or run `hypr-drawer daemon` in a terminal to see errors live.
-- **Drawer opens but no blur.** Confirm `decoration { blur { enabled = true } }`
-  isn't overridden later in your config.
+- **Drawer opens but no blur, or blur flickers.** Confirm
+  `decoration { blur { enabled = true } }` isn't overridden later in your
+  config. The per-monitor shade relies on the `layerrule = blur, drawer-shade`
+  line from `drawer.conf` — run `hyprctl configerrors` and re-run
+  `./install.sh` if you edited the snippet.
 - **Drag does nothing.** Make sure `socat` is installed — the event watcher
   needs it to talk to Hyprland's socket2.
+- **App opens but on the wrong monitor.** `hyprctl clients` coordinates are
+  in global layout space; the daemon translates to local monitor space when
+  placing windows. If something still lands wrong, check
+  `~/.local/state/hypr-drawer/daemon.log` for the computed coordinates.
 - **App opens but on the wrong workspace.** Some apps set `StartupWMClass`
   oddly; positions are keyed by lowercased class. Check `hyprctl clients` to
   see the real class and rename the entry in `positions.json`.
@@ -146,11 +170,24 @@ hypr-drawer quit
 hypr-drawer/
 ├── install.sh / uninstall.sh
 ├── bin/hypr-drawer            # CLI wrapper
-├── config/drawer.conf         # hyprland.conf snippet
+├── config/drawer.conf         # hyprland.conf snippet (layerrules, windowrules, blur)
 ├── packaging/deps.sh          # per-distro dep installer
-└── app/                       # AGS v2 daemon (TypeScript)
-    ├── app.ts                 # entrypoint + IPC + event loop
+└── app/                       # AGS v3 daemon (TypeScript)
+    ├── app.ts                 # entrypoint, IPC, Hyprland socket2 loop
     ├── style.scss
-    ├── service/{Apps,Hypr,Memory}.ts
-    └── widget/{Launcher,AppTile,DropZone}.tsx
+    ├── service/
+    │   ├── Apps.ts            # .desktop discovery
+    │   ├── DragState.ts       # in-flight drag bookkeeping
+    │   ├── Hotkey.ts          # keybind capture / serialization
+    │   ├── Hypr.ts            # hyprctl wrappers
+    │   ├── Layout.ts          # window placement math
+    │   ├── Memory.ts          # per-class geometry persistence
+    │   ├── Preview.ts         # drop-zone preview
+    │   ├── Settings.ts        # user preferences
+    │   ├── Spawn.ts           # launch / move-into-drawer pipeline
+    │   └── Usage.ts           # frequency tracking for ranking
+    └── widget/
+        ├── AppTile.tsx        # launcher tile + drag source
+        ├── Launcher.tsx       # rail, search, settings panel
+        └── Shade.ts           # per-monitor blurred backdrop
 ```
