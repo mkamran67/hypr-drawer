@@ -1,4 +1,5 @@
 import { execAsync, exec } from "ags/process"
+import GLib from "gi://GLib"
 
 // Per-monitor special workspaces: each monitor gets its own
 // `special:drawer-<connector>` (e.g. `special:drawer-DP-1`). This sidesteps
@@ -131,6 +132,46 @@ export async function moveToRegularOn(
 // post-spawn eviction; the workspace name itself carries the monitor.
 export async function spawnInSpecialOn(execStr: string, monitorName: string): Promise<void> {
     await dispatch(`exec [workspace ${fullSpecialNameFor(monitorName)} silent; float] ${execStr}`)
+}
+
+function matchClass(cls: string, c: Client): boolean {
+    const want = cls.toLowerCase()
+    const have = (c.class || "").toLowerCase()
+    return have === want || have.includes(want) || want.includes(have)
+}
+
+// Poll hyprctl for a newly-mapped window matching `cls` that wasn't in the
+// pre-spawn address set. Used to attach floating/geom rules to apps whose
+// own startup is too slow for the spawn-time [float] dispatcher to stick.
+export async function awaitNewWindow(
+    cls: string,
+    knownAddrs: Set<string>,
+    timeoutMs = 4000,
+): Promise<Client | null> {
+    const intervalMs = 120
+    const tries = Math.ceil(timeoutMs / intervalMs)
+    for (let i = 0; i < tries; i++) {
+        const fresh = clients().find(
+            (c) => !knownAddrs.has(c.address) && matchClass(cls, c),
+        )
+        if (fresh) return fresh
+        await new Promise<void>((resolve) => {
+            GLib.timeout_add(GLib.PRIORITY_DEFAULT, intervalMs, () => {
+                resolve()
+                return false
+            })
+        })
+    }
+    return null
+}
+
+// Force a window into the floating state. Belt-and-suspenders for the
+// `[float]` spawn dispatcher and the `float on` workspace windowrule, both
+// of which silently miss for some apps (notably Rust/Tauri windows like
+// verbatim) — the window ends up tiled in the drawer special, where
+// `resizewindowpixel` is a no-op and the user can't drag-resize.
+export async function setFloating(address: string): Promise<void> {
+    await dispatch(`setfloating enable,address:${address}`)
 }
 
 export async function applyGeom(

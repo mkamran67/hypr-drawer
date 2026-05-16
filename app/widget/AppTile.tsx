@@ -135,9 +135,26 @@ export default function AppTile({ app, onLaunch, mode = "tiles" }: Props) {
     )
 }
 
+// Largest icon pixel size that lets `cols` icons sit inside the rail with
+// no horizontal overflow. Subtracts the fixed paddings around the FlowBox
+// (launcher-root 12 × 2, app-tile-grid 2 × 2, vertical scrollbar reserve
+// ~14, FlowBox column gaps 4 px each, and per-tile padding 2 × 2).
+function gridIconSizeFor(cols: number, railWidth: number): number {
+    const availContent = railWidth - 24 - 4 - 14
+    const cellWidth = (availContent - 4 * (cols - 1)) / cols
+    return Math.max(16, Math.min(192, Math.floor(cellWidth - 4)))
+}
+
 function renderBody(app: AppEntry, mode: Mode) {
     if (mode === "grid") {
-        return <image iconName={app.icon} pixelSize={40} />
+        return (
+            <image
+                iconName={app.icon}
+                pixelSize={createComputed(() =>
+                    gridIconSizeFor(Settings.gridColumns(), Settings.width()),
+                )}
+            />
+        )
     }
     if (mode === "compact") {
         return (

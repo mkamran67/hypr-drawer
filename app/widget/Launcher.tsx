@@ -12,6 +12,17 @@ import { AppEntry } from "../service/Apps"
 const [query, setQuery] = createState("")
 const [page, setPage] = createState<"launcher" | "settings">("launcher")
 const [railMon, setRailMon] = createState<any>(null)
+const [editingGrid, setEditingGrid] = createState(false)
+
+function startGridEdit() {
+    Settings.setViewMode("grid")
+    setEditingGrid(true)
+    setPage("launcher")
+}
+
+function finishGridEdit() {
+    setEditingGrid(false)
+}
 
 // Called by app.ts before each show() to re-pin the rail to the user's chosen
 // monitor (which can change at runtime when railMonitor is "focused").
@@ -168,7 +179,54 @@ function LauncherPage(props: { results: ReturnType<typeof createComputed<AppEntr
                     })
                 }}
             />
-            <Gtk.ScrolledWindow hexpand vexpand>
+            <Gtk.Revealer
+                revealChild={createComputed(() => editingGrid())}
+                transitionType={Gtk.RevealerTransitionType.SLIDE_DOWN}
+                transitionDuration={150}
+            >
+                <box
+                    cssClasses={["grid-edit-panel"]}
+                    orientation={Gtk.Orientation.VERTICAL}
+                    spacing={6}
+                >
+                    <label
+                        cssClasses={["settings-section"]}
+                        label="Columns"
+                        xalign={0}
+                    />
+                    <Gtk.Scale
+                        hexpand
+                        drawValue
+                        valuePos={Gtk.PositionType.RIGHT}
+                        digits={0}
+                        $={(self: Gtk.Scale) => {
+                            self.set_range(2, 10)
+                            self.set_increments(1, 1)
+                            self.set_value(Settings.gridColumns())
+                            for (let i = 2; i <= 10; i++) {
+                                self.add_mark(i, Gtk.PositionType.BOTTOM, null)
+                            }
+                            self.connect("value-changed", (s) => {
+                                const v = Math.round(s.get_value())
+                                if (v !== Settings.gridColumns()) Settings.setGridColumns(v)
+                            })
+                        }}
+                    />
+                    <button
+                        cssClasses={["icon-button"]}
+                        hexpand={false}
+                        halign={Gtk.Align.END}
+                        onClicked={finishGridEdit}
+                    >
+                        <label cssClasses={["icon-glyph"]} label="Done" />
+                    </button>
+                </box>
+            </Gtk.Revealer>
+            <Gtk.ScrolledWindow
+                hexpand
+                vexpand
+                hscrollbarPolicy={Gtk.PolicyType.NEVER}
+            >
                 <Gtk.Stack
                     visibleChildName={createComputed(() => Settings.viewMode())}
                     transitionType={Gtk.StackTransitionType.CROSSFADE}
@@ -190,10 +248,11 @@ function LauncherPage(props: { results: ReturnType<typeof createComputed<AppEntr
                         $type="named"
                         name="grid"
                         homogeneous
+                        valign={Gtk.Align.START}
                         selectionMode={Gtk.SelectionMode.NONE}
-                        minChildrenPerLine={3}
-                        maxChildrenPerLine={6}
-                        rowSpacing={4}
+                        minChildrenPerLine={Settings.gridColumns}
+                        maxChildrenPerLine={Settings.gridColumns}
+                        rowSpacing={2}
                         columnSpacing={4}
                     >
                         <For each={props.results}>
@@ -390,6 +449,27 @@ function SettingsPage() {
                             }}
                         />
                     </box>
+
+                    <label
+                        cssClasses={["settings-section"]}
+                        label="Grid view"
+                        xalign={0}
+                    />
+                    <button
+                        cssClasses={["icon-button"]}
+                        hexpand={false}
+                        halign={Gtk.Align.START}
+                        tooltipText="Switch to the grid and tweak rows/columns live"
+                        onClicked={() => startGridEdit()}
+                    >
+                        <label cssClasses={["icon-glyph"]} label="Edit grid view" />
+                    </button>
+                    <label
+                        cssClasses={["launcher-hint"]}
+                        label="Opens the grid with rows + columns sliders. Adjust live, then hit Done."
+                        xalign={0}
+                        wrap
+                    />
 
                     <label cssClasses={["settings-section"]} label="Rail monitor" xalign={0} />
                     <box orientation={Gtk.Orientation.VERTICAL} spacing={4}>
@@ -639,16 +719,26 @@ async function launch(app: AppEntry, modifiers: number) {
             track(existing.address)
             if (targetMon) {
                 await Hypr.moveToSpecialOn(existing.address, targetMon.name)
+                await Hypr.setFloating(existing.address)
             }
             refresh()
             return
         }
     }
 
+    const before = new Set(Hypr.clients().map((c) => c.address))
     if (targetMon) {
         await Hypr.spawnInSpecialOn(app.exec, targetMon.name)
     } else {
         await Hypr.dispatch(`exec [float] ${app.exec}`)
+    }
+    // Some apps (e.g. Rust/Tauri) ignore the spawn-time `[float]`
+    // dispatcher and come up tiled. Wait for the window to appear and
+    // force float so it's actually resizable inside the drawer.
+    const fresh = await Hypr.awaitNewWindow(app.wmClass, before)
+    if (fresh) {
+        track(fresh.address)
+        await Hypr.setFloating(fresh.address)
     }
     refresh()
 }

@@ -1,4 +1,3 @@
-import GLib from "gi://GLib"
 import { AppEntry } from "./Apps"
 import * as Hypr from "./Hypr"
 import * as Memory from "./Memory"
@@ -73,34 +72,6 @@ function trackDrawerWindow(address: string): void {
     }
 }
 
-function matchClient(cls: string, c: Hypr.Client): boolean {
-    const want = cls.toLowerCase()
-    const have = (c.class || "").toLowerCase()
-    return have === want || have.includes(want) || want.includes(have)
-}
-
-async function awaitNewWindow(
-    cls: string,
-    knownAddrs: Set<string>,
-    timeoutMs = 4000,
-): Promise<Hypr.Client | null> {
-    const intervalMs = 120
-    const tries = Math.ceil(timeoutMs / intervalMs)
-    for (let i = 0; i < tries; i++) {
-        const fresh = Hypr.clients().find(
-            (c) => !knownAddrs.has(c.address) && matchClient(cls, c),
-        )
-        if (fresh) return fresh
-        await new Promise<void>((resolve) => {
-            GLib.timeout_add(GLib.PRIORITY_DEFAULT, intervalMs, () => {
-                resolve()
-                return false
-            })
-        })
-    }
-    return null
-}
-
 function centeredGeom(
     dropX: number,
     dropY: number,
@@ -144,6 +115,7 @@ export async function dropApp(
                 : { w: existing.size[0], h: existing.size[1] }
             trackDrawerWindow(existing.address)
             await Hypr.moveToSpecialOn(existing.address, target.name)
+            await Hypr.setFloating(existing.address)
             await Hypr.applyGeom(existing.address, centeredGeom(localX, localY, size))
             forceShadeRefresh()
             return
@@ -153,7 +125,7 @@ export async function dropApp(
     // Spawn path: spawn directly into the target monitor's drawer special.
     const before = new Set(Hypr.clients().map((c) => c.address))
     await Hypr.spawnInSpecialOn(app.exec, target.name)
-    const fresh = await awaitNewWindow(app.wmClass, before)
+    const fresh = await Hypr.awaitNewWindow(app.wmClass, before)
     if (!fresh) return
     trackDrawerWindow(fresh.address)
 
@@ -162,6 +134,8 @@ export async function dropApp(
     if (fresh.monitor !== target.id) {
         await Hypr.moveToSpecialOn(fresh.address, target.name)
     }
+
+    await Hypr.setFloating(fresh.address)
 
     if (saved) {
         await Hypr.applyGeom(

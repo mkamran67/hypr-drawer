@@ -25,6 +25,7 @@ export type Settings = {
     viewMode: ViewMode
     favoritesEnabled: boolean
     recentsEnabled: boolean
+    gridColumns: number
 }
 
 export const DEFAULTS: Settings = {
@@ -38,6 +39,7 @@ export const DEFAULTS: Settings = {
     viewMode: "tiles",
     favoritesEnabled: false,
     recentsEnabled: false,
+    gridColumns: 4,
 }
 
 const STATE_DIR = `${GLib.get_user_state_dir()}/hypr-drawer`
@@ -74,6 +76,7 @@ export const [blurAllMonitors, setBlurAllMonitorsState] = createState<boolean>(i
 export const [viewMode, setViewModeState] = createState<ViewMode>(initial.viewMode)
 export const [favoritesEnabled, setFavoritesEnabledState] = createState<boolean>(initial.favoritesEnabled)
 export const [recentsEnabled, setRecentsEnabledState] = createState<boolean>(initial.recentsEnabled)
+export const [gridColumns, setGridColumnsState] = createState<number>(initial.gridColumns)
 
 function snapshot(): Settings {
     return {
@@ -87,6 +90,7 @@ function snapshot(): Settings {
         viewMode: viewMode(),
         favoritesEnabled: favoritesEnabled(),
         recentsEnabled: recentsEnabled(),
+        gridColumns: gridColumns(),
     }
 }
 
@@ -148,6 +152,12 @@ export function setRecentsEnabled(next: boolean): void {
     saveToDisk({ ...snapshot(), recentsEnabled: next })
 }
 
+export function setGridColumns(next: number): void {
+    const clamped = Math.max(2, Math.min(10, Math.round(next)))
+    setGridColumnsState(clamped)
+    saveToDisk({ ...snapshot(), gridColumns: clamped })
+}
+
 // Reset everything back to DEFAULTS. Caller is responsible for any side
 // effects that need to fire (e.g. reapplying the Hyprland keybind), since
 // this module only owns the persisted values.
@@ -162,6 +172,7 @@ export function reset(): void {
     setViewModeState(DEFAULTS.viewMode)
     setFavoritesEnabledState(DEFAULTS.favoritesEnabled)
     setRecentsEnabledState(DEFAULTS.recentsEnabled)
+    setGridColumnsState(DEFAULTS.gridColumns)
     saveToDisk({ ...DEFAULTS })
 }
 

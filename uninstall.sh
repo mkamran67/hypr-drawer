@@ -8,6 +8,7 @@ BIN="$PREFIX/bin/hypr-drawer"
 HYPR_CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/hypr"
 HYPR_CONF="$HYPR_CONF_DIR/hyprland.conf"
 DRAWER_CONF="$HYPR_CONF_DIR/drawer.conf"
+BIND_CONF="$HYPR_CONF_DIR/drawer-bind.conf"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/hypr-drawer"
 SOURCE_LINE="source = $DRAWER_CONF"
 
@@ -32,6 +33,7 @@ if [ -f "$HYPR_CONF" ] && grep -Fq "$SOURCE_LINE" "$HYPR_CONF"; then
 fi
 
 [ -f "$DRAWER_CONF" ] && { say "Removing $DRAWER_CONF"; rm -f "$DRAWER_CONF"; }
+[ -f "$BIND_CONF" ] && { say "Removing $BIND_CONF"; rm -f "$BIND_CONF"; }
 [ -L "$BIN" ] || [ -f "$BIN" ] && { say "Removing $BIN"; rm -f "$BIN"; }
 [ -d "$APP_DIR" ] && { say "Removing $APP_DIR"; rm -rf "$APP_DIR"; }
 
