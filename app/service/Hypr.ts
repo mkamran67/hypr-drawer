@@ -38,6 +38,7 @@ export type Client = {
     at: [number, number]
     size: [number, number]
     monitor: number
+    floating?: boolean
 }
 
 export type Monitor = {

@@ -291,6 +291,29 @@ function listenHyprEvents() {
                     refreshMonitorAnchors()
                 }
             }
+            // Any new window that lands in a drawer special needs to be
+            // floating to be drag-resizable inside the overlay. Apps that
+            // ignore the spawn-time `[float]` dispatcher or `float on`
+            // windowrule (Rust/Tauri, some Electron) come up tiled, and
+            // popups spawned from a drawer-resident app inherit nothing.
+            // The Spawn/launch paths already force float for their own
+            // direct spawns; this handler covers everything else.
+            const ow = /^openwindow>>([0-9a-fx]+),([^,]+),/.exec(line)
+            if (ow) {
+                const addr = ow[1].startsWith("0x") ? ow[1] : `0x${ow[1]}`
+                const wsName = ow[2]
+                const inDrawer =
+                    wsName.startsWith(Hypr.SPECIAL_PREFIX) ||
+                    wsName.startsWith("drawer-")
+                if (inDrawer) {
+                    drawerTracked.add(addr)
+                    const c = Hypr.clients().find((x) => x.address === addr)
+                    if (c && c.floating !== true) {
+                        Hypr.setFloating(addr).catch(() => {})
+                    }
+                    if (Hypr.isDrawerOpen()) refreshMonitorAnchors()
+                }
+            }
             // Prune tracked entries the moment a window dies, regardless of
             // drawer state, so we don't accumulate dead addresses across
             // sessions.

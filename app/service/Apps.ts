@@ -8,6 +8,20 @@ export type AppEntry = {
     wmClass: string
 }
 
+// Desktop Entry field codes (freedesktop spec). `get_commandline()` returns
+// the raw Exec line including these, but we hand the string to `hyprctl
+// dispatch exec`, which runs it via /bin/sh -c — no field-code expansion.
+// Unsubstituted `%U` / `%F` then reach the app as literal argv and break
+// some launchers (Nautilus rejects `%U` as a bad URI and exits).
+const FIELD_CODES = new Set([
+    "%f", "%F", "%u", "%U", "%d", "%D",
+    "%n", "%N", "%i", "%c", "%k", "%v", "%m",
+])
+
+function stripFieldCodes(cmd: string): string {
+    return cmd.split(/\s+/).filter((t) => t && !FIELD_CODES.has(t)).join(" ")
+}
+
 function toEntry(info: Gio.DesktopAppInfo): AppEntry {
     const icon = info.get_string("Icon") || "application-x-executable"
     const wmClass =
@@ -18,7 +32,7 @@ function toEntry(info: Gio.DesktopAppInfo): AppEntry {
     return {
         name: info.get_name() || info.get_id() || "(unknown)",
         icon,
-        exec: info.get_commandline() || info.get_executable() || "",
+        exec: stripFieldCodes(info.get_commandline() || info.get_executable() || ""),
         desktopId: info.get_id() || "",
         wmClass: wmClass.toLowerCase(),
     }
