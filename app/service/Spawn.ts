@@ -72,7 +72,7 @@ function trackDrawerWindow(address: string): void {
     }
 }
 
-function centeredGeom(
+export function centeredGeom(
     dropX: number,
     dropY: number,
     size: DropSize,

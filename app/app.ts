@@ -5,6 +5,7 @@ import { Gdk } from "ags/gtk4"
 import Launcher, { setLauncherMonitor } from "./widget/Launcher"
 import * as Hypr from "./service/Hypr"
 import * as Memory from "./service/Memory"
+import * as Spawn from "./service/Spawn"
 import * as Preview from "./service/Preview"
 import * as Hotkey from "./service/Hotkey"
 import * as Settings from "./service/Settings"
@@ -250,6 +251,75 @@ app.start({
     },
 })
 
+// Apps that land in a drawer special from outside the drawer's own spawn
+// path (rofi, keybindings, popups inherited from drawer-resident apps) come
+// up tiled and stuck centered, even with the workspace's `float on`
+// windowrule. The openwindow handler force-floats them immediately by
+// address, then this routine settles a usable geometry once the client is
+// visible to hyprctl. Restores remembered geometry if the class was seen
+// before; otherwise centers a default-sized window on the host monitor.
+async function settleOrphanGeometry(address: string): Promise<void> {
+    const intervalMs = 120
+    const tries = 6
+    let c: Hypr.Client | undefined
+    for (let i = 0; i < tries; i++) {
+        c = Hypr.clients().find((x) => x.address === address)
+        if (c) break
+        await new Promise<void>((resolve) => {
+            GLib.timeout_add(GLib.PRIORITY_DEFAULT, intervalMs, () => {
+                resolve()
+                return false
+            })
+        })
+    }
+    if (!c) return
+
+    // Defensive re-float with retries — the fire-and-forget setFloating at
+    // openwindow time often races the app's own initial mapping and gets
+    // dropped, and the windowrule `float on` evaluates before the workspace
+    // assignment is finalized for windows that aren't spawned with an
+    // explicit `[workspace ...]` dispatcher (rofi, external keybinds). One
+    // shot isn't enough — poll until Hyprland reports floating, up to ~500ms.
+    for (let i = 0; i < 5; i++) {
+        if (c.floating === true) break
+        await Hypr.setFloating(address).catch(() => {})
+        await new Promise<void>((resolve) => {
+            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
+                resolve()
+                return false
+            })
+        })
+        c = Hypr.clients().find((x) => x.address === address) ?? c
+    }
+
+    const mon = Hypr.monitors().find((m) => m.id === c!.monitor)
+    if (!mon || mon.width === undefined || mon.height === undefined) return
+
+    const cls = c.class?.toLowerCase()
+    const saved = cls ? Memory.get(cls) : undefined
+
+    if (saved && saved.w > 0 && saved.h > 0) {
+        await Hypr.applyGeom(address, {
+            x: saved.x,
+            y: saved.y,
+            w: saved.w,
+            h: saved.h,
+        }).catch(() => {})
+        return
+    }
+
+    const cap = Spawn.defaultSize()
+    const naturalW = c.size[0]
+    const naturalH = c.size[1]
+    const w = Math.min(naturalW > 0 ? naturalW : cap.w, cap.w)
+    const h = Math.min(naturalH > 0 ? naturalH : cap.h, cap.h)
+    // Center on the host monitor in its local coordinate space.
+    const centerX = Math.round(mon.width / 2)
+    const centerY = Math.round(mon.height / 2)
+    const geom = Spawn.centeredGeom(centerX, centerY, { w, h })
+    await Hypr.applyGeom(address, geom).catch(() => {})
+}
+
 function listenHyprEvents() {
     const his = GLib.getenv("HYPRLAND_INSTANCE_SIGNATURE")
     const runtime = GLib.getenv("XDG_RUNTIME_DIR") || `/run/user/${GLib.get_user_name()}`
@@ -289,6 +359,21 @@ function listenHyprEvents() {
                         }
                     }
                     refreshMonitorAnchors()
+                } else {
+                    // Untracked window moved somewhere — if it landed in a
+                    // drawer special (rofi pulling an already-open window
+                    // into the focused workspace, an external keybind, etc.),
+                    // adopt it: track, force-float, settle geometry. Without
+                    // this, the windowrule `float on` silently misses and
+                    // the user has to togglefloating manually.
+                    const c = Hypr.clients().find((x) => x.address === addr)
+                    const wsName = c?.workspace?.name
+                    if (wsName && wsName.startsWith(Hypr.SPECIAL_PREFIX)) {
+                        drawerTracked.add(addr)
+                        Hypr.setFloating(addr).catch(() => {})
+                        settleOrphanGeometry(addr).catch(() => {})
+                        refreshMonitorAnchors()
+                    }
                 }
             }
             // Any new window that lands in a drawer special needs to be
@@ -307,10 +392,11 @@ function listenHyprEvents() {
                     wsName.startsWith("drawer-")
                 if (inDrawer) {
                     drawerTracked.add(addr)
-                    const c = Hypr.clients().find((x) => x.address === addr)
-                    if (c && c.floating !== true) {
-                        Hypr.setFloating(addr).catch(() => {})
-                    }
+                    // Fire-and-forget — the address usually isn't in
+                    // `hyprctl clients` yet at this event, so don't gate on
+                    // a lookup. setfloating accepts the address directly.
+                    Hypr.setFloating(addr).catch(() => {})
+                    settleOrphanGeometry(addr).catch(() => {})
                     if (Hypr.isDrawerOpen()) refreshMonitorAnchors()
                 }
             }
