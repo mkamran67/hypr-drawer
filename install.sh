@@ -21,12 +21,19 @@ command -v hyprctl >/dev/null 2>&1 \
     || die "hyprctl not found. Install Hyprland first: https://hyprland.org"
 
 # 2. Install runtime deps
-say "Installing runtime dependencies"
-# shellcheck source=packaging/deps.sh
-source "$SCRIPT_DIR/packaging/deps.sh"
-# Fatal on purpose: without ags v3 the daemon cannot start, and continuing
-# would leave a keybind that fails silently with a "daemon failed to start".
-install_deps || die "Dependency step failed — review messages above and re-run."
+# SKIP_DEPS=1 bypasses the whole step. Needed to exercise the config-hooking
+# logic in a sandbox (see the verification matrix in fix-plan.md) without sudo
+# or network — install_deps shells out to the system package manager.
+if [ "${SKIP_DEPS:-0}" != 1 ]; then
+    say "Installing runtime dependencies"
+    # shellcheck source=packaging/deps.sh
+    source "$SCRIPT_DIR/packaging/deps.sh"
+    # Fatal on purpose: without ags v3 the daemon cannot start, and continuing
+    # would leave a keybind that fails silently with a "daemon failed to start".
+    install_deps || die "Dependency step failed — review messages above and re-run."
+else
+    warn "SKIP_DEPS=1 — not installing or verifying runtime dependencies."
+fi
 
 # 3. Lay out directories
 say "Creating directories"
@@ -63,10 +70,21 @@ bind = SUPER CTRL, R, exec, $BIN_DIR/hypr-drawer toggle
 EOF
 fi
 
-# 7. Idempotently hook into hyprland.conf
+# 7. Idempotently hook into the hypr config
+#
+# Search every .conf under the config dir, not just hyprland.conf. HyDE and
+# most dotfile frameworks move user `source` lines into userprefs.conf, and a
+# user who has done that would otherwise get a duplicate on every reinstall.
+# uninstall.sh uses the same repo-wide search to remove them again.
 touch "$HYPR_CONF"
-if grep -Fxq "$SOURCE_LINE" "$HYPR_CONF"; then
-    say "hyprland.conf already sources drawer.conf — skipping."
+# -R, not -r: plain -r skips symlinks found during recursion, and these files
+# are commonly symlinked in from a dotfiles repo. uninstall.sh matches.
+existing_ref="$(grep -RlF "$SOURCE_LINE" "$HYPR_CONF_DIR" --include='*.conf' 2>/dev/null || true)"
+if [ -n "$existing_ref" ]; then
+    say "drawer.conf is already sourced — skipping. Referenced by:"
+    while IFS= read -r f; do
+        [ -n "$f" ] && say "    $f"
+    done <<< "$existing_ref"
 else
     say "Appending source line to $HYPR_CONF"
     {
@@ -111,6 +129,16 @@ current_hotkey() {
     fi
 }
 
+# Not guaranteed present: SKIP_DEPS installs skip the whole dependency step,
+# and reporting "command not found" as a version is worse than saying so.
+ags_version() {
+    if command -v ags >/dev/null 2>&1; then
+        ags --version 2>&1 | head -1
+    else
+        printf 'not installed'
+    fi
+}
+
 cat <<EOF
 
 ✓ hypr-drawer installed.
@@ -118,8 +146,8 @@ cat <<EOF
   Toggle:        $(current_hotkey)
                  (rebind from the drawer's settings page — the file it
                   writes is $DRAWER_BIND_CONF)
-  ags version:   $(ags --version 2>&1 | head -1)
+  ags version:   $(ags_version)
   State file:    $STATE_DIR/positions.json
-  Uninstall:     $SCRIPT_DIR/uninstall.sh
+  Uninstall:     $SCRIPT_DIR/uninstall.sh  (add --purge to also drop state)
 
 EOF
