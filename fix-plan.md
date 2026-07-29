@@ -1,8 +1,16 @@
 # hypr-drawer — correctness & safety fixes
 
-> **Status:** planned, not started. Written 2026-07-28. Scope was deliberately
-> limited to correctness and safety; see *Deferred* below for what was left out
-> on purpose.
+> **Status:** in progress. Written 2026-07-28; reconciled against the live
+> machine and current code on 2026-07-29. Scope was deliberately limited to
+> correctness and safety; see *Deferred* below for what was left out on purpose.
+>
+> **Gate 0 passed 2026-07-29** — see *Verification*. The coordinate-space
+> premise is now proven on hardware, not just from source.
+>
+> The 2026-07-29 pass confirmed the monitor table, the import-cycle argument,
+> every cited line number, and both "not a bug" calls. It added one missed bug
+> (§1.8) and one new installer item (§2.4), and reordered execution so the
+> toolchain install comes first (see *Verification → toolchain*).
 
 ## Context
 
@@ -29,14 +37,14 @@ The result is that drag-and-drop — the product's core interaction — is broke
 
 ## Scope
 
-**In:** the coordinate bug (3 sites), installer/uninstaller config safety, the dead `resizewindow` branch, the `/run/user` fallback.
+**In:** the coordinate bug (3 sites), the Memory class-key mismatch (§1.8), installer/uninstaller config safety, the dead `resizewindow` branch, the `/run/user` fallback.
 
 **Deferred by decision** (real, but not this pass):
 
 - blocking `hyprctl` subprocess per socket event (`app.ts:413` — `isDrawerOpen()` runs on every line)
 - 60 Hz blocking fork during drags (`AppTile.tsx:103-107` calls the synchronous `Hypr.cursorPos()`)
 - `pollId` timer leak on widget destroy (`AppTile.tsx:51`; `<For>` rebuilds tiles on every query/favorites/counts change)
-- `Memory.update()` full read-modify-write per client inside a loop (`app.ts:147-158`, `app.ts:415-426`)
+- `Memory.update()` full read-modify-write per client inside a loop (`app.ts:147-158`, `app.ts:415-426`) — §1.8 edits these *call sites* but deliberately leaves the write amplification alone
 - `railMonitor` persisted as an unstable GDK index → connector-name migration (`Launcher.tsx:652-663`)
 - `Apps.list()` re-parsing every `.desktop` file on each keystroke (`Launcher.tsx:39-48`)
 - `Preview.ts` never handles monitor hotplug (`init()` early-returns once populated)
@@ -45,7 +53,7 @@ The result is that drag-and-drop — the product's core interaction — is broke
 **Not a bug — do not "fix":**
 
 - `Usage.ts:44-53`. `createState`'s setter is synchronous (`gnim/src/jsx/state.ts:145-149` assigns then notifies inline), so reading the accessor right after the setter returns the new value. `Usage.ts` is correct and `Settings.ts`'s `{ ...snapshot(), key: next }` override is merely redundant. Leave both.
-- `install.sh:45`'s `app.ts` symlink. esbuild defaults to `preserveSymlinks: false`, so imports resolve via realpath today.
+- `install.sh:43`'s `app.ts` symlink. esbuild defaults to `preserveSymlinks: false`, so imports resolve via realpath today.
 - `uninstall.sh:63` `[ -L ] || [ -f ] && { … }` parses as `(A||B) && C`, which is intended; and `[ … ] && { … }` is not a `set -e` hazard (bash exempts all but the final command in an `&&` list). Both verified by test.
 
 ---
@@ -128,6 +136,29 @@ Swap the inline hit-test for `Hypr.monitorAt(x, y, mons)` and the inline `x - (h
 
 **No `positions.json` migration is needed.** It was always written from `c.at`, which is already global; only the *consumption* was wrong.
 
+### 1.8 Memory's key space (added 2026-07-29)
+
+`positions.json` is written and read under **two different key schemes**, so saved geometry is frequently never found again:
+
+- **Writers** (`app.ts:151`, `app.ts:419`) key on `c.class.toLowerCase()` — the runtime Hyprland window class.
+- **Readers** (`Spawn.ts:44` `previewSize`, `Spawn.ts:98` `dropApp`) key on `app.wmClass`, which `Apps.ts:27-31` derives as `(StartupWMClass || executable || name).toLowerCase()`.
+
+These agree only when a `.desktop` file's `StartupWMClass` exactly matches the runtime class. When it doesn't — no `StartupWMClass` at all (falls through to the *executable*, or worse the display *name*), Electron apps, flatpak reverse-DNS ids — `dropApp` silently falls back to `defaultSize()` forever and the file accumulates two entries per app.
+
+This belongs in this pass because §1.5's whole point is making the saved-geometry restore path correct. Fixing coordinates in a branch that never fires would be wasted work.
+
+`Hypr.findByClass` (`Hypr.ts:84-89`) and `matchClass` (`Hypr.ts:138-142`) already solve the equivalent runtime problem with substring matching. Reuse those semantics rather than inventing new ones.
+
+**No file-format migration:**
+
+1. Thread the desktop-derived key through the tracking callback that already exists. `Spawn.trackDrawerWindow` (`Spawn.ts:64`) calls `globalThis.__hyprDrawerTrack(address)`; widen it to `(address, wmClass?)`. `app.ts` keeps a `Map<address, string>` beside its existing `drawerTracked` set.
+2. Both persist loops write under the tracked `wmClass` when known, falling back to `c.class.toLowerCase()` for orphans — windows adopted from outside the drawer have no `AppEntry`, so no `wmClass` to use.
+3. `Memory.get(cls)` resolves: exact hit first, then a scan of existing keys using `matchClass`'s rule (`have === want || have.includes(want) || want.includes(have)`). This catches orphan-written entries and everything written before this change.
+
+**Guard the fallback:** exact match always wins; require key length ≥ 3 so short keys can't match half the file; on multiple candidates prefer the longest. Land in the same commit as §1.7 — both edit the same two `Memory.update` call sites.
+
+Do **not** convert the `globalThis.__hyprDrawer*` escape hatches into real imports while here. They exist to break a genuine `app.ts ↔ Spawn.ts` cycle; §1.8 widens one but must keep the pattern.
+
 ---
 
 ## Phase 2 — Installer / uninstaller config safety
@@ -142,9 +173,11 @@ Three defects compound into one broken config:
 2. It only ever inspects `hyprland.conf`. HyDE — which the test machine runs — and most dotfile frameworks move user `source` lines into `userprefs.conf`.
 3. `drawer.conf` is deleted **unconditionally** at line 61, so any surviving `source` line becomes a hard config error on next reload.
 
-Rewrite as: `grep -rlF "$DRAWER_CONF" "$HYPR_CONF_DIR" --include='*.conf'` to find every referencing file → strip the source line from each **with or without** the marker (buffering the marker comment so it's only re-emitted when it wasn't ours) → delete `drawer.conf` **only if nothing references it any more**, warning otherwise.
+Rewrite as: `grep -RlF "$DRAWER_CONF" "$HYPR_CONF_DIR" --include='*.conf'` to find every referencing file → strip the source line from each **with or without** the marker (buffering the marker comment so it's only re-emitted when it wasn't ours) → delete `drawer.conf` **only if nothing references it any more**, warning otherwise.
 
 Write results with `cat "$tmp" > "$f"`, not `mv` — `mv` replaces the inode and destroys symlinks, and dotfile frameworks symlink these files into a git repo.
+
+**`-R`, not `-r`** — found while testing, and it matters more than the `mv` point. Plain `grep -r` **skips symlinks encountered during recursion**, so a symlinked `hyprland.conf` is never even examined: the source line survives *and* `drawer.conf` gets deleted as unreferenced, producing exactly the broken config §2.1 exists to prevent. Both scripts must use `-R`.
 
 ### 2.2 `uninstall.sh:66` — unconditional state wipe
 
@@ -153,6 +186,14 @@ Write results with `cat "$tmp" > "$f"`, not `mv` — `mv` replaces the inode and
 ### 2.3 `install.sh:66-77` — the symmetric bug
 
 `grep -Fxq "$SOURCE_LINE" "$HYPR_CONF"` also only inspects `hyprland.conf`, so a user who has moved the source line into `userprefs.conf` gets a **duplicate** on reinstall. Use the same repo-wide `grep -rlF` search before deciding to append. Same helper, same commit.
+
+### 2.4 `install.sh` — `SKIP_DEPS` escape hatch (added 2026-07-29)
+
+The sandboxed verification below cannot run as originally written. `install.sh` step 2 (lines 24-31) unconditionally sources `packaging/deps.sh` and runs `install_deps`, which shells out to `sudo pacman` — so every sandbox run would attempt a real system package install.
+
+Wrap step 2 in `if [ "${SKIP_DEPS:-0}" != 1 ]; then … fi`. One conditional, and it makes all four §2 cases mechanically testable with no sudo and no network.
+
+Also guard the closing banner's `$(ags --version …)` (line 121), which otherwise prints a "command not found" line in a `SKIP_DEPS` run.
 
 ---
 
@@ -174,7 +215,19 @@ Log loudly when none is found. Today a wrong path produces a `socat` that dies i
 
 ## Verification
 
+### Toolchain — do this first (added 2026-07-29)
+
+Present on the test machine: `hyprctl`, `jq`. **Missing: `ags`, `socat`, `sass`, `node`, `npx`, `tsc`, `gjs`, `shellcheck`.** So `npx tsc --noEmit` and `ags bundle` — the two cross-cutting gates below — cannot run, and the daemon cannot start at all (`ags` runs it, `socat` carries the event stream every shade refresh and geometry save depends on, `sass` compiles `style.scss`).
+
+hypr-drawer is also **not currently installed** — `grep -rlF drawer.conf ~/.config/hypr` returns nothing — so §2's "then for real" step has nothing to uninstall until a real install happens.
+
+Run `./install.sh` first. This box is CachyOS → `detect_family` returns `arch` (it matches `*" cachyos "*` explicitly) → `install_ags_arch` pulls `aylurs-gtk-shell` from a configured repo or an AUR helper, and `install_base_deps` pulls `socat jq dart-sass`. Needs sudo. Add `shellcheck` to the same pacman call.
+
+Nothing in Phase 1 or 3 depends on this. If the install stalls on AUR or Nix, write the code anyway and treat runtime verification as a separate follow-up — Gate 0 below is unaffected.
+
 ### Gate 0 — before touching any coordinate code
+
+> **PASSED 2026-07-29.** Scratch window landed on DP-2 (origin `3750,4060`) reporting `at=5677,4108`. The identity dispatch was a no-op — had the space been monitor-local, feeding `5677` back would have displaced it to `9427`. The `+100` dispatch moved exactly `100,0`. The invariant is proven on hardware.
 
 Already proven from source, but confirm on the live compositor, since every Phase 1 change rests on it. Uses a scratch window and is fully reversible:
 
@@ -186,8 +239,10 @@ hyprctl dispatch movewindowpixel "exact $X $Y,address:$A"; sleep 0.5   # identit
 hyprctl -j clients | jq -r --arg a "$A" '.[]|select(.address==$a)|.at'
 hyprctl dispatch movewindowpixel "exact $((X+100)) $Y,address:$A"; sleep 0.5
 hyprctl -j clients | jq -r --arg a "$A" '.[]|select(.address==$a)|.at'  # must be exactly +100
-hyprctl dispatch killactive
+hyprctl dispatch closewindow "address:$A"
 ```
+
+Close by address, not `killactive` — the scratch window is not necessarily the focused one, and `killactive` would take whatever is. Likewise, select `$A` by diffing the address set before and after the spawn rather than by class, so a pre-existing terminal isn't picked up.
 
 Decisive because the origins are in the thousands: if the space were monitor-local, feeding a global `X` back would displace the window by 3750 or 5430 px. **Do not start Phase 1 until this passes.**
 
@@ -199,6 +254,10 @@ Decisive because the origins are in the thousands: if the space were monitor-loc
 - `isOverRail` with side=left, rail on HDMI-A-1: `(5500, 3000)` true; `(6431, 3221)` false; `(3760, 4100)` false (different monitor — the old code got this wrong in both directions).
 - `clampToMonitor(DP-2, centeredGeom(3760, 4100, {w:720,h:480}))` stays within `3750..8870 × 4060..5500`.
 
+With no `node` on the box, run these under `ags run` on a scratch script once the toolchain step above is done.
+
+**§1.8 specifically:** drop an app whose `.desktop` lacks `StartupWMClass`, close the drawer, reopen, drop it again — it must return at the remembered size. Then `jq 'keys' ~/.local/state/hypr-drawer/positions.json` must show **one** entry for it, not two.
+
 Runtime, once ags v3 is installed — drag one tile onto each of the three monitors and assert the window centre matches the recorded `cursorpos` within ±2 px:
 
 ```bash
@@ -209,16 +268,22 @@ Pre-fix this is wrong by exactly `(mon.x, mon.y)` — 3750 or 5430 px, unmissabl
 
 ### Phase 2 — sandboxed, no risk to the real config
 
+Requires §2.4's `SKIP_DEPS` guard, or the sandbox run will try to `sudo pacman`:
+
 ```bash
 T=$(mktemp -d)
-XDG_CONFIG_HOME=$T/config XDG_STATE_HOME=$T/state PREFIX=$T/local ./install.sh
+SKIP_DEPS=1 XDG_CONFIG_HOME=$T/config XDG_STATE_HOME=$T/state PREFIX=$T/local ./install.sh
 grep -rn "drawer.conf" $T/config/hypr        # exactly one source line
-XDG_CONFIG_HOME=$T/config XDG_STATE_HOME=$T/state PREFIX=$T/local ./uninstall.sh
+SKIP_DEPS=1 XDG_CONFIG_HOME=$T/config XDG_STATE_HOME=$T/state PREFIX=$T/local ./uninstall.sh
 grep -rn "drawer.conf" $T/config/hypr        # expect nothing
 test -e $T/config/hypr/drawer.conf && echo FAIL
 ```
 
 Three further cases: (a) move the source line into `userprefs.conf`, re-run install → must not duplicate, then uninstall → must strip it; (b) delete the marker comment but keep the source line → uninstall must still strip it; (c) make a referencing file a symlink → the symlink must survive.
+
+The test machine's real `~/.config/hypr` has a populated `userprefs.conf` alongside `hyprland.conf`, so case (a) is live, not hypothetical.
+
+> **All of the above is automated in `packaging/test-config-hook.sh`** (21 assertions across 9 groups, all passing as of 2026-07-29). It also covers `--purge`, a surviving reference blocking `drawer.conf` deletion, a marker comment that isn't ours being preserved, and install/uninstall idempotence. Run it after any change to either script; it never touches the real config.
 
 Then for real: `./uninstall.sh && hyprctl reload && hyprctl configerrors` → expect no errors.
 
@@ -232,6 +297,7 @@ Then for real: `./uninstall.sh && hyprctl reload && hyprctl configerrors` → ex
 - `app/service/Layout.ts` — highest-impact single fix
 - `app/service/RailState.ts` — new, breaks the import cycle
 - `app/service/Spawn.ts` — drop path
+- `app/service/Memory.ts` — resolving `get()`, connector-name `monitor` (§1.7, §1.8)
 - `app/app.ts` — orphan geometry, memory key, dead event branch, socket path
 - `app/service/Preview.ts` — refactor to shared helper, behavior unchanged
 - `app/widget/Launcher.tsx` — delegate rail state

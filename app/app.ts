@@ -1,6 +1,7 @@
 import app from "ags/gtk4/app"
 import { subprocess } from "ags/process"
 import GLib from "gi://GLib"
+import Gio from "gi://Gio"
 import { Gdk } from "ags/gtk4"
 import Launcher, { setLauncherMonitor } from "./widget/Launcher"
 import * as Hypr from "./service/Hypr"
@@ -257,8 +258,11 @@ app.start({
         launcherWin = Launcher()
         Preview.init()
         Hotkey.ensureFile()
-        // Subscribe to Hyprland events so geometry of a window the user
-        // resizes/moves while the drawer is open gets persisted live.
+        // Subscribe to Hyprland events. Note geometry is NOT persisted live:
+        // Hyprland emits no event for an interactive move or resize (see the
+        // socket handler below), so a window the user drags or resizes is
+        // snapshotted on the next hide() instead. The gap is narrow — changes
+        // are lost only if the daemon dies while the drawer is open. Accepted.
         listenHyprEvents()
         // Live blur-scope and rail-monitor changes: refresh shades. We no
         // longer evict from special on mode switch — apps live in regular
@@ -346,11 +350,50 @@ async function settleOrphanGeometry(address: string): Promise<void> {
     await Hypr.applyGeom(address, geom).catch(() => {})
 }
 
+// Locate Hyprland's socket2. There is no single correct location: it moved to
+// $XDG_RUNTIME_DIR/hypr in 0.41 and lived under /tmp/hypr before that, and the
+// runtime dir itself is keyed by UID.
+//
+// The previous code guessed `/run/user/${GLib.get_user_name()}` whenever
+// XDG_RUNTIME_DIR was unset — that yields `/run/user/mk`, but the directory is
+// `/run/user/1000`. A wrong path produces a socat that dies into a
+// console.error nobody reads, silently killing the entire event pipeline:
+// every shade refresh and every geometry save depends on this stream. So probe
+// real candidates and complain loudly if none exist.
+function findEventSocket(his: string): string | null {
+    const candidates: string[] = []
+    const push = (dir: string | null) => {
+        if (dir) candidates.push(`${dir}/hypr/${his}/.socket2.sock`)
+    }
+
+    push(GLib.getenv("XDG_RUNTIME_DIR"))
+    push(GLib.get_user_runtime_dir())
+    try {
+        push(`/run/user/${Gio.Credentials.new().get_unix_user()}`)
+    } catch {}
+    // Hyprland < 0.41.
+    candidates.push(`/tmp/hypr/${his}/.socket2.sock`)
+
+    for (const path of candidates) {
+        if (GLib.file_test(path, GLib.FileTest.EXISTS)) return path
+    }
+
+    console.error(
+        "hypr-drawer: could not find Hyprland's socket2. Tried:\n  " +
+            candidates.join("\n  ") +
+            "\nLive geometry saves and shade refreshes will not work.",
+    )
+    return null
+}
+
 function listenHyprEvents() {
     const his = GLib.getenv("HYPRLAND_INSTANCE_SIGNATURE")
-    const runtime = GLib.getenv("XDG_RUNTIME_DIR") || `/run/user/${GLib.get_user_name()}`
-    if (!his) return
-    const sock = `${runtime}/hypr/${his}/.socket2.sock`
+    if (!his) {
+        console.error("hypr-drawer: HYPRLAND_INSTANCE_SIGNATURE unset — not a Hyprland session?")
+        return
+    }
+    const sock = findEventSocket(his)
+    if (!sock) return
     subprocess(
         ["socat", "-U", "-", `UNIX-CONNECT:${sock}`],
         (line: string) => {
@@ -440,7 +483,12 @@ function listenHyprEvents() {
                 }
             }
             if (!Hypr.isDrawerOpen()) return
-            if (/^(movewindow|resizewindow|closewindow|openwindow)>>/.test(line)) {
+            // No `resizewindow` here: Hyprland does not emit such an event.
+            // `movewindow` fires only from moveToWorkspace(), and
+            // src/layout/supplementary/DragController.cpp posts nothing on
+            // drag begin or end — there is no IPC signal for an interactive
+            // move or resize at all. Don't re-add it.
+            if (/^(movewindow|closewindow|openwindow)>>/.test(line)) {
                 const monNames = new Map(Hypr.monitors().map((m) => [m.id, m.name]))
                 for (const c of Hypr.clients()) {
                     if (!drawerTracked.has(c.address)) continue
