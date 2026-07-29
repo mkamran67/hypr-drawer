@@ -4,9 +4,19 @@ import * as Memory from "./Memory"
 import * as Settings from "./Settings"
 
 // Resolve which monitor a drop should land on. Priority order:
-//   1. The monitor whose layout bounding rect contains (dropX, dropY).
-//   2. The saved monitor id from Memory, if one was recorded.
-//   3. Final fallback: the focused monitor.
+//   1. The monitor whose layout rect contains the global drop point.
+//   2. The saved monitor from Memory — connector name first, then a legacy
+//      numeric id, so existing positions.json files keep working.
+//   3. Nearest monitor, for drops into layout dead space.
+//   4. The focused monitor, then whatever is first.
+//
+// The hit-test is deliberately NOT gated on Settings.blurAllMonitors(). Now
+// that the drop point is correctly treated as global, a gated drop would move
+// the window into special:drawer-<focused> while positioning it at another
+// monitor's coordinates — workspace membership and geometry would contradict
+// each other. The user-visible consequence is intended: with "blur all
+// monitors" off, a drop released over a different monitor lands *there*
+// rather than on the focused monitor.
 function resolveTargetMonitor(
     dropX: number,
     dropY: number,
@@ -15,15 +25,12 @@ function resolveTargetMonitor(
     const mons = Hypr.monitors()
     if (mons.length === 0) return undefined
 
-    if (Settings.blurAllMonitors()) {
-        const hit = mons.find((m) => {
-            if (m.x === undefined || m.y === undefined || !m.width || !m.height) return false
-            return dropX >= m.x && dropX < m.x + m.width && dropY >= m.y && dropY < m.y + m.height
-        })
-        if (hit) return hit
-    }
+    const hit = Hypr.monitorAt(dropX, dropY, mons)
+    if (hit) return hit
 
     if (savedMonitor !== undefined) {
+        const byName = mons.find((m) => m.name === savedMonitor)
+        if (byName) return byName
         const id = parseInt(savedMonitor, 10)
         if (!Number.isNaN(id)) {
             const byId = mons.find((m) => m.id === id)
@@ -31,7 +38,7 @@ function resolveTargetMonitor(
         }
     }
 
-    return mons.find((m) => m.focused) ?? mons[0]
+    return Hypr.nearestMonitor(dropX, dropY, mons) ?? mons.find((m) => m.focused) ?? mons[0]
 }
 
 export type DropSize = { w: number; h: number }
@@ -61,27 +68,50 @@ function forceShadeRefresh(): void {
     }
 }
 
-function trackDrawerWindow(address: string): void {
+// `wmClass` is the desktop-derived key this window should be remembered under.
+// app.ts records it so its geometry-persist loops write under the same key
+// Memory is later read with — see the key-space note in Memory.ts.
+function trackDrawerWindow(address: string, wmClass?: string): void {
     const fn = (globalThis as any).__hyprDrawerTrack
     if (typeof fn === "function") {
         try {
-            fn(address)
+            fn(address, wmClass)
         } catch (e) {
             console.error("track:", e)
         }
     }
 }
 
+// Centre a window of `size` on a point. Both the point and the result are in
+// global layout space; there is no monitor-local step anywhere in the drop
+// path (see the invariant in Hypr.ts).
 export function centeredGeom(
     dropX: number,
     dropY: number,
     size: DropSize,
-): { x: number; y: number; w: number; h: number } {
+): Hypr.Rect {
     return {
         x: Math.round(dropX - size.w / 2),
         y: Math.round(dropY - size.h / 2),
         w: size.w,
         h: size.h,
+    }
+}
+
+// Keep a window fully on its target monitor. Needed because a hit-test miss
+// now falls back to `nearestMonitor`, and because centring on a point near an
+// edge otherwise parks half the window off-screen. Size is clamped first so a
+// window larger than the monitor is shrunk rather than pushed out of view.
+export function clampToMonitor(m: Hypr.Monitor, geom: Hypr.Rect): Hypr.Rect {
+    const r = Hypr.rectOf(m)
+    if (!r) return geom
+    const w = Math.min(geom.w, r.w)
+    const h = Math.min(geom.h, r.h)
+    return {
+        x: Math.max(r.x, Math.min(geom.x, r.x + r.w - w)),
+        y: Math.max(r.y, Math.min(geom.y, r.y + r.h - h)),
+        w,
+        h,
     }
 }
 
@@ -99,11 +129,8 @@ export async function dropApp(
     const target = resolveTargetMonitor(dropX, dropY, saved?.monitor)
     if (!target) return
 
-    // Drop coords are in the source overlay monitor's local space. Translate
-    // to the target monitor's local space (which is also what
-    // movewindowpixel expects).
-    const localX = target.x !== undefined ? dropX - target.x : dropX
-    const localY = target.y !== undefined ? dropY - target.y : dropY
+    // (dropX, dropY) is global and stays global — every hyprctl dispatcher
+    // below consumes global coordinates. No translation step.
 
     // Move-existing path: reassign the window into the target monitor's
     // drawer special, then reposition.
@@ -113,10 +140,13 @@ export async function dropApp(
             const size: DropSize = saved
                 ? { w: saved.w, h: saved.h }
                 : { w: existing.size[0], h: existing.size[1] }
-            trackDrawerWindow(existing.address)
+            trackDrawerWindow(existing.address, app.wmClass)
             await Hypr.moveToSpecialOn(existing.address, target.name)
             await Hypr.setFloating(existing.address)
-            await Hypr.applyGeom(existing.address, centeredGeom(localX, localY, size))
+            await Hypr.applyGeom(
+                existing.address,
+                clampToMonitor(target, centeredGeom(dropX, dropY, size)),
+            )
             forceShadeRefresh()
             return
         }
@@ -127,7 +157,7 @@ export async function dropApp(
     await Hypr.spawnInSpecialOn(app.exec, target.name)
     const fresh = await Hypr.awaitNewWindow(app.wmClass, before)
     if (!fresh) return
-    trackDrawerWindow(fresh.address)
+    trackDrawerWindow(fresh.address, app.wmClass)
 
     // If Hyprland spawned the window on a different monitor (rare — usually
     // the [workspace ...] rule wins), pull it onto the intended one.
@@ -140,7 +170,7 @@ export async function dropApp(
     if (saved) {
         await Hypr.applyGeom(
             fresh.address,
-            centeredGeom(localX, localY, { w: saved.w, h: saved.h }),
+            clampToMonitor(target, centeredGeom(dropX, dropY, { w: saved.w, h: saved.h })),
         )
     } else {
         const cap = defaultSize()
@@ -148,9 +178,12 @@ export async function dropApp(
         const naturalH = fresh.size[1]
         const w = Math.min(naturalW, cap.w)
         const h = Math.min(naturalH, cap.h)
-        const geom = centeredGeom(localX, localY, { w, h })
+        const geom = clampToMonitor(target, centeredGeom(dropX, dropY, { w, h }))
 
-        if (w === naturalW && h === naturalH) {
+        // Only skip the resize when the clamp also left the size untouched —
+        // otherwise a window larger than the monitor would keep its natural
+        // size and only get moved.
+        if (w === naturalW && h === naturalH && geom.w === w && geom.h === h) {
             await Hypr.movePixel(fresh.address, geom.x, geom.y)
         } else {
             await Hypr.applyGeom(fresh.address, geom)

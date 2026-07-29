@@ -1,6 +1,29 @@
 import { execAsync, exec } from "ags/process"
 import GLib from "gi://GLib"
 
+// ---------------------------------------------------------------------------
+// COORDINATE SPACE INVARIANT
+//
+// Anything handed to, or read from, a hyprctl dispatcher is in GLOBAL layout
+// space. That covers `cursorpos`, a client's `.at`, and the integers fed to
+// `movewindowpixel exact` / `resizewindowpixel exact`.
+//
+// Proven against Hyprland v0.56.0 and re-confirmed on hardware 2026-07-29:
+// `Compositor.cpp:869-871` takes the literal integers for `exact` with no
+// `relativeTo` added, and `relativeTo` is `position(GEOMETRIC_GOAL)` — the
+// same accessor `hyprctl clients -j .at` reports. A scratch window on a
+// monitor with origin (3750, 4060) reported `at=5677,4108`; dispatching that
+// same X back was a no-op, and +100 moved exactly 100px.
+//
+// Monitor-LOCAL space exists in exactly one place: geometry inside a
+// per-monitor layer-shell window's `Gtk.Fixed` (see Preview.ts). `toLocal` is
+// the only legal bridge into it, and is only ever called immediately before a
+// `Gtk.Fixed.move()`.
+//
+// This was worth writing down because on a single monitor at origin (0,0) the
+// two spaces are numerically identical, so confusing them is invisible.
+// ---------------------------------------------------------------------------
+
 // Per-monitor special workspaces: each monitor gets its own
 // `special:drawer-<connector>` (e.g. `special:drawer-DP-1`). This sidesteps
 // the single-instance migration race of a single global `special:drawer`
@@ -71,6 +94,73 @@ export function cursorPos(): { x: number; y: number } | null {
     } catch {
         return null
     }
+}
+
+// --------------------------------------------------------------- geometry
+
+export type Rect = { x: number; y: number; w: number; h: number }
+
+// A monitor's global layout rect, or null when hyprctl omitted any part of
+// the geometry. Callers must handle null rather than defaulting — a monitor
+// with unknown bounds can't be hit-tested or clamped against meaningfully.
+export function rectOf(m: Monitor): Rect | null {
+    if (
+        m.x === undefined ||
+        m.y === undefined ||
+        m.width === undefined ||
+        m.height === undefined
+    ) {
+        return null
+    }
+    return { x: m.x, y: m.y, w: m.width, h: m.height }
+}
+
+// Inclusive on the top-left edge, exclusive on the bottom-right, so adjacent
+// monitors in a layout never both claim the same pixel.
+export function containsPoint(r: Rect, x: number, y: number): boolean {
+    return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
+}
+
+// The monitor whose layout rect contains the global point, if any. Returns
+// undefined for points in layout dead space — which is a real case on
+// non-rectangular arrangements, not a defensive hypothetical. Pair with
+// `nearestMonitor` wherever a miss still has to resolve to something.
+export function monitorAt(x: number, y: number, mons?: Monitor[]): Monitor | undefined {
+    const list = mons ?? monitors()
+    return list.find((m) => {
+        const r = rectOf(m)
+        return r !== null && containsPoint(r, x, y)
+    })
+}
+
+// Closest monitor by squared distance to its rect (0 when inside). Used as the
+// fallback when `monitorAt` misses, so a drop into dead space still lands
+// somewhere sensible instead of nowhere.
+export function nearestMonitor(x: number, y: number, mons?: Monitor[]): Monitor | undefined {
+    const list = mons ?? monitors()
+    let best: Monitor | undefined
+    let bestDist = Infinity
+    for (const m of list) {
+        const r = rectOf(m)
+        if (!r) continue
+        const cx = Math.max(r.x, Math.min(x, r.x + r.w))
+        const cy = Math.max(r.y, Math.min(y, r.y + r.h))
+        const dx = x - cx
+        const dy = y - cy
+        const dist = dx * dx + dy * dy
+        if (dist < bestDist) {
+            bestDist = dist
+            best = m
+        }
+    }
+    return best
+}
+
+// Global -> monitor-local. The ONLY legal bridge out of global space; see the
+// invariant at the top of this file. Call it immediately before a
+// `Gtk.Fixed.move()` and nowhere else.
+export function toLocal(m: Monitor, x: number, y: number): { x: number; y: number } {
+    return { x: x - (m.x ?? 0), y: y - (m.y ?? 0) }
 }
 
 export function clients(): Client[] {

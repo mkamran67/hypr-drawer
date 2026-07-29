@@ -7,11 +7,11 @@ import * as Settings from "../service/Settings"
 import * as Memory from "../service/Memory"
 import * as Hotkey from "../service/Hotkey"
 import * as Usage from "../service/Usage"
+import * as RailState from "../service/RailState"
 import { AppEntry } from "../service/Apps"
 
 const [query, setQuery] = createState("")
 const [page, setPage] = createState<"launcher" | "settings">("launcher")
-const [railMon, setRailMon] = createState<any>(null)
 const [editingGrid, setEditingGrid] = createState(false)
 
 function startGridEdit() {
@@ -25,9 +25,11 @@ function finishGridEdit() {
 }
 
 // Called by app.ts before each show() to re-pin the rail to the user's chosen
-// monitor (which can change at runtime when railMonitor is "focused").
+// monitor (which can change at runtime when railMonitor is "focused"). The
+// state itself lives in RailState so Layout can read it without importing this
+// module — see the cycle note there.
 export function setLauncherMonitor(mon: any): void {
-    setRailMon(mon)
+    RailState.setRailMonitor(mon)
 }
 
 function closeDrawer() {
@@ -52,7 +54,7 @@ export default function Launcher() {
         <window
             cssClasses={["drawer-launcher"]}
             namespace="hypr-drawer"
-            gdkmonitor={railMon}
+            gdkmonitor={RailState.railMonitor}
             anchor={anchor}
             layer={Astal.Layer.OVERLAY}
             keymode={Astal.Keymode.ON_DEMAND}
@@ -60,6 +62,10 @@ export default function Launcher() {
             visible={false}
             widthRequest={Settings.width}
             $={(self) => {
+                // Hand the live window to RailState so Layout.isOverRail can
+                // measure the rail's real thickness instead of trusting
+                // Settings.width(), which only describes the vertical sides.
+                RailState.setRailWindow(self)
                 const keyCtl = new Gtk.EventControllerKey()
                 keyCtl.connect("key-pressed", (_c, key) => {
                     if (key === Gdk.KEY_Escape) closeDrawer()

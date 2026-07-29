@@ -81,15 +81,32 @@ function refreshMonitorAnchors(): void {
 // pruneDeadTracked() and on closewindow socket events.
 const drawerTracked = new Set<string>()
 
-export function trackDrawerWindow(address: string): void {
+// address -> the desktop-derived wmClass the window was launched as. Only
+// populated for windows that came through the drop pipeline, which is the only
+// place an AppEntry exists. Keeps Memory writes keyed the same way Spawn reads
+// them — see the key-space note in Memory.ts.
+const trackedClass = new Map<string, string>()
+
+export function trackDrawerWindow(address: string, wmClass?: string): void {
     drawerTracked.add(address)
+    if (wmClass) trackedClass.set(address, wmClass)
+}
+
+// The key a window's geometry should be remembered under. Prefers the
+// desktop-derived class; falls back to the runtime window class for orphans
+// adopted from outside the drawer, which have no AppEntry.
+function memoryKeyFor(c: Hypr.Client): string | undefined {
+    return trackedClass.get(c.address) ?? c.class?.toLowerCase() ?? undefined
 }
 
 function pruneDeadTracked(): void {
     if (drawerTracked.size === 0) return
     const live = new Set(Hypr.clients().map((c) => c.address))
     for (const addr of [...drawerTracked]) {
-        if (!live.has(addr)) drawerTracked.delete(addr)
+        if (!live.has(addr)) {
+            drawerTracked.delete(addr)
+            trackedClass.delete(addr)
+        }
     }
 }
 
@@ -132,7 +149,8 @@ async function show() {
     // has had a chance to settle them onto regular workspaces.
     for (const c of Hypr.clients()) {
         if (!drawerTracked.has(c.address)) continue
-        const saved = Memory.get(c.class?.toLowerCase() || "")
+        const key = memoryKeyFor(c)
+        const saved = key ? Memory.get(key) : undefined
         if (saved) Hypr.applyGeom(c.address, saved).catch(() => {})
     }
     refreshMonitorAnchors()
@@ -144,16 +162,20 @@ async function hide() {
     // persists across toggles. Windows live in their monitor's drawer
     // special; Hyprland remembers special-workspace membership across the
     // toggle so the next open re-reveals them in place.
+    // Connector names, not Hyprland's numeric monitor ids — those are
+    // reassigned on replug, so a saved "1" can point at a different physical
+    // monitor next session.
+    const monNames = new Map(Hypr.monitors().map((m) => [m.id, m.name]))
     for (const c of Hypr.clients()) {
         if (!drawerTracked.has(c.address)) continue
-        const cls = c.class?.toLowerCase()
-        if (!cls) continue
-        Memory.update(cls, {
+        const key = memoryKeyFor(c)
+        if (!key) continue
+        Memory.update(key, {
             x: c.at[0],
             y: c.at[1],
             w: c.size[0],
             h: c.size[1],
-            monitor: String(c.monitor),
+            monitor: monNames.get(c.monitor) ?? String(c.monitor),
         })
     }
     // Tear down the visible surfaces first so the shade is gone before
@@ -293,18 +315,20 @@ async function settleOrphanGeometry(address: string): Promise<void> {
     }
 
     const mon = Hypr.monitors().find((m) => m.id === c!.monitor)
-    if (!mon || mon.width === undefined || mon.height === undefined) return
+    const r = mon ? Hypr.rectOf(mon) : null
+    if (!mon || !r) return
 
-    const cls = c.class?.toLowerCase()
-    const saved = cls ? Memory.get(cls) : undefined
+    const key = memoryKeyFor(c)
+    const saved = key ? Memory.get(key) : undefined
 
     if (saved && saved.w > 0 && saved.h > 0) {
-        await Hypr.applyGeom(address, {
-            x: saved.x,
-            y: saved.y,
-            w: saved.w,
-            h: saved.h,
-        }).catch(() => {})
+        // Clamped because the geometry may have been saved on a monitor that
+        // has since been unplugged or moved, which would otherwise park the
+        // window off-screen.
+        await Hypr.applyGeom(
+            address,
+            Spawn.clampToMonitor(mon, { x: saved.x, y: saved.y, w: saved.w, h: saved.h }),
+        ).catch(() => {})
         return
     }
 
@@ -313,10 +337,12 @@ async function settleOrphanGeometry(address: string): Promise<void> {
     const naturalH = c.size[1]
     const w = Math.min(naturalW > 0 ? naturalW : cap.w, cap.w)
     const h = Math.min(naturalH > 0 ? naturalH : cap.h, cap.h)
-    // Center on the host monitor in its local coordinate space.
-    const centerX = Math.round(mon.width / 2)
-    const centerY = Math.round(mon.height / 2)
-    const geom = Spawn.centeredGeom(centerX, centerY, { w, h })
+    // Centre of the host monitor in GLOBAL coordinates — the origin has to be
+    // added, since that is the space applyGeom consumes. Omitting it put every
+    // orphan on whichever monitor happens to sit at the layout origin.
+    const centerX = r.x + Math.round(r.w / 2)
+    const centerY = r.y + Math.round(r.h / 2)
+    const geom = Spawn.clampToMonitor(mon, Spawn.centeredGeom(centerX, centerY, { w, h }))
     await Hypr.applyGeom(address, geom).catch(() => {})
 }
 
@@ -406,22 +432,26 @@ function listenHyprEvents() {
             const cw = /^closewindow>>([0-9a-fx]+)/.exec(line)
             if (cw) {
                 const addr = cw[1].startsWith("0x") ? cw[1] : `0x${cw[1]}`
+                // Unconditionally — the drawer being hidden is no reason to
+                // keep a dead address's class around.
+                trackedClass.delete(addr)
                 if (drawerTracked.delete(addr) && Hypr.isDrawerOpen()) {
                     refreshMonitorAnchors()
                 }
             }
             if (!Hypr.isDrawerOpen()) return
             if (/^(movewindow|resizewindow|closewindow|openwindow)>>/.test(line)) {
+                const monNames = new Map(Hypr.monitors().map((m) => [m.id, m.name]))
                 for (const c of Hypr.clients()) {
                     if (!drawerTracked.has(c.address)) continue
-                    const cls = c.class?.toLowerCase()
-                    if (!cls) continue
-                    Memory.update(cls, {
+                    const key = memoryKeyFor(c)
+                    if (!key) continue
+                    Memory.update(key, {
                         x: c.at[0],
                         y: c.at[1],
                         w: c.size[0],
                         h: c.size[1],
-                        monitor: String(c.monitor),
+                        monitor: monNames.get(c.monitor) ?? String(c.monitor),
                     })
                 }
             }

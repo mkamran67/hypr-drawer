@@ -102,25 +102,21 @@ export function show(app: AppEntry): void {
 export function move(x: number, y: number): void {
     if (entries.size === 0) return
     const mons = Hypr.monitors()
-    const host = mons.find(
-        (m) =>
-            m.x !== undefined &&
-            m.y !== undefined &&
-            m.width !== undefined &&
-            m.height !== undefined &&
-            x >= m.x &&
-            x < m.x + m.width &&
-            y >= m.y &&
-            y < m.y + m.height,
-    )
+    // (x, y) is global; `monitorAt` is the extracted form of the hit-test that
+    // used to be inlined here, and is the reference the rest of the codebase
+    // now shares. No fallback to `nearestMonitor` on a miss: a cursor in
+    // layout dead space should hide every preview rect, not snap one onto a
+    // monitor the cursor isn't over.
+    const host = Hypr.monitorAt(x, y, mons)
 
     for (const e of entries.values()) {
         if (!host || e.name !== host.name) {
             e.rect.visible = false
             continue
         }
-        const lx = x - (host.x ?? 0)
-        const ly = y - (host.y ?? 0)
+        // The one legal crossing into monitor-local space: Gtk.Fixed geometry
+        // is relative to its own per-monitor layer-shell window.
+        const { x: lx, y: ly } = Hypr.toLocal(host, x, y)
         const px = Math.max(
             0,
             Math.min(e.width - currentSize.w, Math.round(lx - currentSize.w / 2)),

@@ -1,27 +1,40 @@
-import { Gdk } from "ags/gtk4"
 import * as Settings from "./Settings"
+import * as Hypr from "./Hypr"
+import * as RailState from "./RailState"
 
-function primaryMonitor(): { w: number; h: number } {
-    try {
-        const display = Gdk.Display.get_default()
-        const monitors: any = display?.get_monitors?.()
-        const first: any = monitors?.get_item?.(0)
-        const g = first?.get_geometry?.()
-        if (g) return { w: g.width || 1920, h: g.height || 1080 }
-    } catch {}
-    return { w: 1920, h: 1080 }
-}
-
-// True when (x, y) — global compositor coords — falls inside the launcher
-// rail strip. Used to short-circuit drops that release back over the rail.
+// True when (x, y) — GLOBAL compositor coords, see the invariant in Hypr.ts —
+// falls inside the launcher rail strip. Used to short-circuit drops that
+// release back over the rail.
+//
+// This previously tested against GDK monitor index 0 with its origin thrown
+// away, which is only correct when the rail happens to be on a monitor at
+// (0, 0). On a layout with non-zero origins it went wrong in both directions:
+// `side: left` compared a global x (never below 3510 here) against a bare
+// width, so it was always false and drops landed *under* the rail; `right` and
+// `bottom` were always true, silently swallowing 100% of drops.
+//
+// Fails OPEN — an unknown rail monitor returns false, so the drop proceeds.
+// Failing closed is what made those swallowed drops invisible.
 export function isOverRail(x: number, y: number): boolean {
-    const side = Settings.side()
-    const w = Settings.width()
-    const mon = primaryMonitor()
-    switch (side) {
-        case "left":   return x < w
-        case "right":  return x > mon.w - w
-        case "top":    return y < w
-        case "bottom": return y > mon.h - w
+    const name = RailState.railMonitorName()
+    if (!name) return false
+
+    const mon = Hypr.monitors().find((m) => m.name === name)
+    if (!mon) return false
+
+    const r = Hypr.rectOf(mon)
+    if (!r) return false
+
+    // A point on a different monitor is never over the rail, regardless of
+    // where it sits within that monitor.
+    if (!Hypr.containsPoint(r, x, y)) return false
+
+    const t = RailState.thickness()
+    switch (Settings.side()) {
+        case "left":   return x < r.x + t
+        case "right":  return x >= r.x + r.w - t
+        case "top":    return y < r.y + t
+        case "bottom": return y >= r.y + r.h - t
     }
+    return false
 }
