@@ -24,7 +24,9 @@ command -v hyprctl >/dev/null 2>&1 \
 say "Installing runtime dependencies"
 # shellcheck source=packaging/deps.sh
 source "$SCRIPT_DIR/packaging/deps.sh"
-install_deps || warn "Dependency step had issues — review messages above."
+# Fatal on purpose: without ags v3 the daemon cannot start, and continuing
+# would leave a keybind that fails silently with a "daemon failed to start".
+install_deps || die "Dependency step failed — review messages above and re-run."
 
 # 3. Lay out directories
 say "Creating directories"
@@ -86,11 +88,36 @@ if ! printf '%s' "$PATH" | tr ':' '\n' | grep -Fxq "$BIN_DIR"; then
     warn "    export PATH=\"\$HOME/.local/bin:\$PATH\""
 fi
 
+# Report the keybind that is actually live, not the default. Step 6b leaves an
+# existing drawer-bind.conf alone, so on a re-install the real hotkey may be
+# whatever the daemon last wrote from the settings UI.
+current_hotkey() {
+    local line mods key
+    line="$(grep -m1 -E '^[[:space:]]*bind[[:space:]]*=' "$DRAWER_BIND_CONF" 2>/dev/null || true)"
+    if [ -z "$line" ]; then
+        printf 'not set — see %s' "$DRAWER_BIND_CONF"
+        return
+    fi
+    # `bind = SUPER CTRL, R, exec, …` → mods="SUPER CTRL", key="R"
+    line="${line#*=}"
+    mods="$(printf '%s' "$line" | cut -d, -f1 \
+        | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/ + /g')"
+    key="$(printf '%s' "$line" | cut -d, -f2 \
+        | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    if [ -n "$mods" ]; then
+        printf '%s + %s' "$mods" "$key"
+    else
+        printf '%s' "$key"
+    fi
+}
+
 cat <<EOF
 
 ✓ hypr-drawer installed.
 
-  Toggle:        SUPER + CTRL + R   (change in $DRAWER_CONF)
+  Toggle:        $(current_hotkey)
+                 (rebind from the drawer's settings page — the file it
+                  writes is $DRAWER_BIND_CONF)
   ags version:   $(ags --version 2>&1 | head -1)
   State file:    $STATE_DIR/positions.json
   Uninstall:     $SCRIPT_DIR/uninstall.sh

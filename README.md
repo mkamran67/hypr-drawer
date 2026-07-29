@@ -39,15 +39,32 @@ Under the hood it's a thin layer on top of Hyprland primitives:
 
 ## Requirements
 
-- **Hyprland** (any recent version).
-- **Nix** with flakes enabled. The installer pulls AGS v3 from
-  [Aylur's flake](https://github.com/Aylur/ags) — the only source where v3
-  is reliably packaged today. Nixpkgs / AUR / COPR all still ship the v2
-  line which has an incompatible API.
-- `socat` and `jq` (installed by your distro's package manager).
-- ~600 MB of disk for the first Nix install (cached after that).
+- **Hyprland** — 0.53 or newer. `config/drawer.conf` uses the `match:` window-rule
+  syntax introduced in 0.53; older versions will throw config errors.
+- **AGS v3** (the v2 line has an incompatible API). How you get it depends on
+  your distro — see below.
+- `socat` (reads Hyprland's `socket2` event stream), `dart-sass` (compiles
+  `app/style.scss`), and `jq`.
 
-If you don't have Nix yet, install it first:
+### AGS v3 by distro
+
+`./install.sh` picks the right source automatically. Nix is only a **fallback**,
+used where no distro package exists.
+
+| Distro | Source | Nix needed? |
+| --- | --- | --- |
+| Arch, CachyOS, EndeavourOS, Manjaro | `aylurs-gtk-shell` (AUR, mirrored by chaotic-aur) | No |
+| Fedora | `aylurs-gtk-shell` via [Terra](https://terra.fyralabs.com) | No, if Terra is enabled |
+| Ubuntu, Debian, Linux Mint, Pop!\_OS | [Aylur's flake](https://github.com/Aylur/ags) | **Yes** |
+| openSUSE | Aylur's flake | **Yes** |
+| NixOS | add the flake to your own config — the installer won't touch it | n/a |
+
+Note that **nixpkgs itself still ships AGS 2.3.0**, which is too old; the flake
+ref (`github:Aylur/ags#agsFull`) is what provides v3.
+
+Set `AGS_FORCE_NIX=1` to skip native packages and always use the flake.
+
+If you're on a distro that needs Nix and don't have it yet:
 
 ```bash
 # Determinate Systems installer (recommended for non-NixOS):
@@ -58,7 +75,8 @@ sh <(curl -L https://nixos.org/nix/install) --daemon
 ```
 
 Make sure `~/.nix-profile/bin` is on your `PATH` (the Nix installer normally
-adds this to your shell rc; open a new shell after installing).
+adds this to your shell rc; open a new shell after installing). Budget ~600 MB
+of disk for the first Nix install, cached after that.
 
 ## Install
 
@@ -70,25 +88,30 @@ cd hypr-drawer
 
 The installer:
 
-1. Installs `socat` and `jq` via your distro PM (`pacman`/`apt`/`dnf`/`zypper`).
-2. Installs **AGS v3** into your Nix profile from
-   `github:Aylur/ags#agsFull` (bundles ags, astal4/GTK4, the apps service,
-   the Hyprland module). Idempotent: re-running upgrades in place.
-3. Verifies `ags --version` ≥ 3.x.
-4. Drops `~/.config/hypr/drawer.conf` and adds **one** `source = …` line to
+1. Detects your distro family from `/etc/os-release` (so derivatives like
+   CachyOS and Mint resolve to arch/debian correctly).
+2. Installs `socat`, `jq` and `dart-sass` via your distro PM
+   (`pacman`/`apt`/`dnf`/`zypper`).
+3. Installs **AGS v3** from your distro's repo where one exists, otherwise
+   from `github:Aylur/ags#agsFull` into your Nix profile (bundles ags,
+   astal4/GTK4, the apps service, the Hyprland module). Idempotent:
+   re-running upgrades in place, and an existing v3 is left alone.
+4. Verifies `ags --version` ≥ 3.x and that `sass` is on `PATH`.
+5. Drops `~/.config/hypr/drawer.conf` and adds **one** `source = …` line to
    `hyprland.conf` (idempotent — safe to re-run).
-5. Installs the daemon to `~/.local/share/hypr-drawer` and a CLI wrapper to
+6. Installs the daemon to `~/.local/share/hypr-drawer` and a CLI wrapper to
    `~/.local/bin/hypr-drawer`.
-6. Runs `hyprctl reload`.
+7. Runs `hyprctl reload`.
 
-User-level only. The only `sudo` is whatever your package manager needs for
-`socat`/`jq`. Everything else lands under `~/.nix-profile` and `~/.local`.
+User-level only. The only `sudo` is whatever your package manager needs for the
+runtime packages. Everything else lands under `~/.local` (plus `~/.nix-profile`
+on the Nix path).
 
-### Why Nix even on Arch/Fedora?
-
-AGS v3 isn't in any distro repo yet. Aylur's flake is currently the only
-place that ships v3 with all the Astal-4.0 (GTK4) typelibs wired up.
-Once it lands in nixpkgs/AUR/COPR we'll switch to using those.
+> **Note:** `config/drawer.conf` sets `decoration { blur { … } }` globally, and
+> the installer appends its `source = …` line to the end of `hyprland.conf` — so
+> it takes precedence over blur settings defined earlier in your config. If you
+> already tune blur (HyDE, ML4W, end-4 and similar dotfiles all do), edit the
+> `decoration` block in `drawer.conf` to match yours.
 
 ## Usage
 
@@ -107,10 +130,17 @@ Once it lands in nixpkgs/AUR/COPR we'll switch to using those.
 
 Two options:
 
-- **In-app**: open the drawer, click the settings cog, and use the keyboard
-  shortcut editor (supports F13–F24 and other extended keys).
-- **By hand**: edit `~/.config/hypr/drawer.conf` and change the `bind = …`
-  line, then `hyprctl reload`.
+- **In-app** (preferred): open the drawer, click the settings cog, and use the
+  keyboard shortcut editor (supports F13–F24 and other extended keys).
+- **By hand**: edit `~/.config/hypr/drawer-bind.conf` — change *both* the
+  `unbind = …` and `bind = …` lines — then `hyprctl reload`.
+
+`drawer-bind.conf` is a separate file from `drawer.conf` because the daemon
+**rewrites it wholesale** whenever you change the shortcut in-app, so any hand
+edits there are lost the next time you touch the setting. `drawer.conf` only
+`source`s it. Re-running `./install.sh` will not clobber it — the installer
+seeds that file only when it doesn't already exist, and the closing banner
+reports whichever bind is actually live.
 
 ## State
 
