@@ -97,7 +97,9 @@ The installer:
    astal4/GTK4, the apps service, the Hyprland module). Idempotent:
    re-running upgrades in place, and an existing v3 is left alone.
 4. Verifies `ags --version` ≥ 3.x and that `sass` is on `PATH`.
-5. Drops `~/.config/hypr/drawer.conf` and adds **one** `source = …` line to
+5. Detects your **config provider** (see below) and drops either
+   `~/.config/hypr/drawer.lua` + one `require("drawer")` line in
+   `hyprland.lua`, or `~/.config/hypr/drawer.conf` + one `source = …` line in
    `hyprland.conf` (idempotent — safe to re-run).
 6. Installs the daemon to `~/.local/share/hypr-drawer` and a CLI wrapper to
    `~/.local/bin/hypr-drawer`.
@@ -107,11 +109,34 @@ User-level only. The only `sudo` is whatever your package manager needs for the
 runtime packages. Everything else lands under `~/.local` (plus `~/.nix-profile`
 on the Nix path).
 
-> **Note:** `config/drawer.conf` sets `decoration { blur { … } }` globally, and
-> the installer appends its `source = …` line to the end of `hyprland.conf` — so
-> it takes precedence over blur settings defined earlier in your config. If you
-> already tune blur (HyDE, ML4W, end-4 and similar dotfiles all do), edit the
-> `decoration` block in `drawer.conf` to match yours.
+### Config providers: `hyprland.lua` vs `hyprland.conf`
+
+Hyprland ships two config parsers in the same binary. The original hyprlang one
+is now `Config::Legacy` internally; the Lua one is what a fresh install
+generates, and what CachyOS ships by default. Which one runs is decided by your
+config files, **not** by your Hyprland version, so the installer detects it
+rather than checking a version number:
+
+| `~/.config/hypr` contains                | provider used |
+| ---------------------------------------- | ------------- |
+| `hyprland.lua` (with or without `.conf`)  | lua           |
+| only `hyprland.conf`                      | legacy        |
+| neither                                   | lua (Hyprland generates one) |
+
+Check yours with `hyprctl systeminfo | grep configProvider`. Override the
+detection with `HYPR_PROVIDER=lua ./install.sh` or `HYPR_PROVIDER=legacy` if
+you need to. If the installer picks the wrong one the failure is silent — it
+writes a valid config into a file Hyprland never opens, and the hotkey simply
+does nothing.
+
+> **Note:** on the legacy path, `config/drawer.conf` sets
+> `decoration { blur { … } }` globally, and the installer appends its
+> `source = …` line to the end of `hyprland.conf` — so it takes precedence over
+> blur settings defined earlier in your config. If you already tune blur (HyDE,
+> ML4W, end-4 and similar dotfiles all do), edit the `decoration` block in
+> `drawer.conf` to match yours. `config/drawer.lua` deliberately does not do
+> this: it sets only `decoration.blur.special` and leaves your `size`/`passes`
+> alone.
 
 ## Usage
 
@@ -132,15 +157,21 @@ Two options:
 
 - **In-app** (preferred): open the drawer, click the settings cog, and use the
   keyboard shortcut editor (supports F13–F24 and other extended keys).
-- **By hand**: edit `~/.config/hypr/drawer-bind.conf` — change *both* the
-  `unbind = …` and `bind = …` lines — then `hyprctl reload`.
+- **By hand**: edit `~/.config/hypr/drawer-bind.lua` (or `drawer-bind.conf` on
+  the legacy provider) — change *both* the unbind and the bind line — then
+  `hyprctl reload`.
 
-`drawer-bind.conf` is a separate file from `drawer.conf` because the daemon
+The bind file is separate from `drawer.lua`/`drawer.conf` because the daemon
 **rewrites it wholesale** whenever you change the shortcut in-app, so any hand
-edits there are lost the next time you touch the setting. `drawer.conf` only
-`source`s it. Re-running `./install.sh` will not clobber it — the installer
-seeds that file only when it doesn't already exist, and the closing banner
-reports whichever bind is actually live.
+edits there are lost the next time you touch the setting. The snippet only
+`require`s (or `source`s) it. Re-running `./install.sh` will not clobber it —
+the installer seeds that file only when it doesn't already exist, and the
+closing banner reports whichever bind is actually live.
+
+Applying a rebind live also differs by provider, which the daemon handles for
+you: `hyprctl keyword` is rejected outright under the Lua parser
+(`keyword can't work with non-legacy parsers. Use eval.`), so the Lua path
+drives `hyprctl eval 'hl.bind(…)'` instead.
 
 ## State
 
@@ -163,8 +194,10 @@ everything. Settings and usage stats are stored alongside in the same
 ./uninstall.sh
 ```
 
-Removes the source line from `hyprland.conf`, the snippet, the binary, and the
-app directory. Prompts before deleting saved positions.
+Removes the hook line from `hyprland.lua`/`hyprland.conf`, the snippet, the
+binary, and the app directory. Both providers are always swept, so a config
+that migrated from hyprlang to Lua between install and uninstall doesn't strand
+a hook pointing at a deleted file. Prompts before deleting saved positions.
 
 ## CLI
 
@@ -178,9 +211,13 @@ hypr-drawer quit
 
 ## Troubleshooting
 
-- **Nothing happens on keybind.** Check `pgrep -af 'ags.*hypr-drawer'`. If
-  empty, look at `~/.local/state/hypr-drawer/daemon.log` for the last failed
-  start, or run `hypr-drawer daemon` in a terminal to see errors live.
+- **Nothing happens on keybind.** First check the config provider actually
+  matches what was installed: `hyprctl systeminfo | grep configProvider`. If it
+  says `lua` but you have a `drawer.conf`, Hyprland never read it — re-run
+  `./install.sh`. Then check `pgrep -af 'ags.*hypr-drawer'`. If empty, look at
+  `~/.local/state/hypr-drawer/daemon.log` for the last failed start, or run
+  `hypr-drawer daemon` in a terminal to see errors live. `hyprctl binds` shows
+  whether the bind is registered at all.
 - **Drawer opens but no blur, or blur flickers.** Confirm
   `decoration { blur { enabled = true } }` isn't overridden later in your
   config. The per-monitor shade relies on the `layerrule = blur, drawer-shade`
@@ -202,7 +239,8 @@ hypr-drawer quit
 hypr-drawer/
 ├── install.sh / uninstall.sh
 ├── bin/hypr-drawer            # CLI wrapper
-├── config/drawer.conf         # hyprland.conf snippet (layerrules, windowrules, blur)
+├── config/drawer.conf         # hyprland.conf snippet, legacy provider
+├── config/drawer.lua          # hyprland.lua snippet, lua provider
 ├── packaging/deps.sh          # per-distro dep installer
 └── app/                       # AGS v3 daemon (TypeScript)
     ├── app.ts                 # entrypoint, IPC, Hyprland socket2 loop

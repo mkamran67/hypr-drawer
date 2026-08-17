@@ -1,5 +1,7 @@
 import { execAsync, exec } from "ags/process"
 import GLib from "gi://GLib"
+import { serialize, type Action } from "./Dispatch"
+import { provider } from "./Provider"
 
 // ---------------------------------------------------------------------------
 // COORDINATE SPACE INVARIANT
@@ -193,15 +195,28 @@ export function isDrawerOpen(): boolean {
     return monitors().some((m) => m.specialWorkspace?.name?.startsWith(SPECIAL_PREFIX))
 }
 
-export async function dispatch(args: string): Promise<string> {
-    return await execAsync(`hyprctl dispatch ${args}`)
+// Every compositor action goes through here as data, so the Lua and legacy
+// spellings live in one serializer instead of being scattered across template
+// literals. See Dispatch.ts for why the two differ at all.
+export async function dispatch(action: Action): Promise<string> {
+    const arg = serialize(action, provider())
+    if (provider() === "lua") {
+        // Argv form, not a command string: the Lua expression carries quotes,
+        // parens and commas that GLib.shell_parse_argv would mangle.
+        return await execAsync(["hyprctl", "dispatch", arg])
+    }
+    return await execAsync(`hyprctl dispatch ${arg}`)
 }
 
 // Move a window into the target monitor's drawer special workspace. Used to
 // reassign membership after a drag between monitors, or to re-trap an
 // orphan into its rightful monitor on adoption.
 export async function moveToSpecialOn(address: string, monitorName: string): Promise<void> {
-    await dispatch(`movetoworkspacesilent ${fullSpecialNameFor(monitorName)},address:${address}`)
+    await dispatch({
+        kind: "moveToWorkspaceSilent",
+        workspace: fullSpecialNameFor(monitorName),
+        address,
+    })
 }
 
 // Move a window to the target monitor's currently-active REGULAR (non-special)
@@ -215,14 +230,18 @@ export async function moveToRegularOn(
     const m = monitors().find((x) => x.name === monitorName)
     const ws = m?.activeWorkspace?.id
     if (ws === undefined) return
-    await dispatch(`movetoworkspacesilent ${ws},address:${address}`)
+    await dispatch({ kind: "moveToWorkspaceSilent", workspace: String(ws), address })
 }
 
 // Spawn an app directly into the given monitor's drawer special workspace,
 // floating. Per-monitor specials make this trivial — no migration, no
 // post-spawn eviction; the workspace name itself carries the monitor.
 export async function spawnInSpecialOn(execStr: string, monitorName: string): Promise<void> {
-    await dispatch(`exec [workspace ${fullSpecialNameFor(monitorName)} silent; float] ${execStr}`)
+    await dispatch({
+        kind: "spawnWithRules",
+        exec: execStr,
+        workspace: fullSpecialNameFor(monitorName),
+    })
 }
 
 function matchClass(cls: string, c: Client): boolean {
@@ -262,23 +281,23 @@ export async function awaitNewWindow(
 // verbatim) — the window ends up tiled in the drawer special, where
 // `resizewindowpixel` is a no-op and the user can't drag-resize.
 export async function setFloating(address: string): Promise<void> {
-    await dispatch(`setfloating enable,address:${address}`)
+    await dispatch({ kind: "setFloating", address })
 }
 
 export async function applyGeom(
     address: string,
     geom: { x: number; y: number; w: number; h: number },
 ): Promise<void> {
-    await dispatch(`resizewindowpixel exact ${geom.w} ${geom.h},address:${address}`)
-    await dispatch(`movewindowpixel exact ${geom.x} ${geom.y},address:${address}`)
+    await dispatch({ kind: "resizeExact", w: geom.w, h: geom.h, address })
+    await dispatch({ kind: "moveExact", x: geom.x, y: geom.y, address })
 }
 
 export async function movePixel(address: string, x: number, y: number): Promise<void> {
-    await dispatch(`movewindowpixel exact ${x} ${y},address:${address}`)
+    await dispatch({ kind: "moveExact", x, y, address })
 }
 
 export async function moveWindowToMonitor(address: string, monitorName: string): Promise<void> {
-    await dispatch(`movewindow mon:${monitorName},address:${address}`)
+    await dispatch({ kind: "moveToMonitor", monitor: monitorName, address })
 }
 
 // Open the drawer special workspace on every monitor that doesn't already
@@ -293,10 +312,10 @@ export async function openAllDrawerSpecials(): Promise<void> {
     for (const m of mons) {
         const want = specialNameFor(m.name)
         if (m.specialWorkspace?.name === `special:${want}`) continue
-        await dispatch(`focusmonitor ${m.name}`)
-        await dispatch(`togglespecialworkspace ${want}`)
+        await dispatch({ kind: "focusMonitor", monitor: m.name })
+        await dispatch({ kind: "toggleSpecial", workspace: want })
     }
-    if (originalFocus) await dispatch(`focusmonitor ${originalFocus}`)
+    if (originalFocus) await dispatch({ kind: "focusMonitor", monitor: originalFocus })
 }
 
 // Close every drawer special that's currently open. Mirrors
@@ -312,8 +331,8 @@ export async function closeAllDrawerSpecials(): Promise<void> {
         if (!name || !name.startsWith(SPECIAL_PREFIX)) continue
         // Toggle on the monitor that currently hosts this special, which
         // will close it. Usually that's m itself, but we trust the data.
-        await dispatch(`focusmonitor ${m.name}`)
-        await dispatch(`togglespecialworkspace ${name.slice("special:".length)}`)
+        await dispatch({ kind: "focusMonitor", monitor: m.name })
+        await dispatch({ kind: "toggleSpecial", workspace: name.slice("special:".length) })
     }
-    if (originalFocus) await dispatch(`focusmonitor ${originalFocus}`)
+    if (originalFocus) await dispatch({ kind: "focusMonitor", monitor: originalFocus })
 }

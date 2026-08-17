@@ -736,7 +736,7 @@ async function launch(app: AppEntry, modifiers: number) {
     if (targetMon) {
         await Hypr.spawnInSpecialOn(app.exec, targetMon.name)
     } else {
-        await Hypr.dispatch(`exec [float] ${app.exec}`)
+        await Hypr.dispatch({ kind: "spawnFloating", exec: app.exec })
     }
     // Some apps (e.g. Rust/Tauri) ignore the spawn-time `[float]`
     // dispatcher and come up tiled. Wait for the window to appear and

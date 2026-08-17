@@ -2,6 +2,118 @@
 
 Repo: `github.com/mkamran67/hypr-drawer`
 
+---
+
+## Hyprland Lua config provider support (DONE — pending a real reinstall)
+
+Hyprland ships two config providers in one binary. The hyprlang one is now
+namespaced `Config::Legacy` internally; a fresh install with no config
+generates `hyprland.lua`. CachyOS already ships a Lua config by default, and
+on those machines the installer hooked `hyprland.conf` — a file Hyprland
+never reads — so the drawer silently did nothing.
+
+Resolution order, verified against 0.56.2 with `--verify-config`:
+
+| config dir contains                    | provider |
+| -------------------------------------- | -------- |
+| `hyprland.lua` (with or without `.conf`) | lua      |
+| only `hyprland.conf`                     | legacy   |
+| neither                                  | lua (generated) |
+
+- [x] `detect_provider()` in `install.sh` — mirror the table above; honour a
+      `HYPR_PROVIDER` override so the sandboxed tests stay hermetic. Falls back
+      to a running compositor's `configProvider`, then to probing the binary
+      with `--verify-config` in a throwaway HOME.
+- [x] `config/drawer.lua` + `drawer-bind.lua` templates. `@BIN@` is substituted
+      with the real prefix, so a non-default `PREFIX` no longer gets a
+      hardcoded `~/.local/bin` the way `drawer.conf` still does.
+- [x] `install.sh` — hook `require("drawer")` into `hyprland.lua` under lua,
+      keep the `source =` path under legacy.
+- [x] `install.sh` — stop `touch`ing `hyprland.conf` unconditionally. On a
+      machine with no config yet it creates an empty `.conf` where no `.lua`
+      exists, which silently flips the user from lua to the legacy provider.
+      The hook file is now never created; a missing one warns and prints the
+      line to add by hand. (Creating an empty `hyprland.lua` would be worse
+      still — it suppresses the config Hyprland would otherwise generate.)
+- [x] `uninstall.sh` — strip the `require` line from `*.lua`, remove
+      `drawer.lua` / `drawer-bind.lua`. Both providers are always swept.
+- [x] `Hotkey.ts` — `hyprctl keyword` is rejected under lua
+      (`keyword can't work with non-legacy parsers. Use eval.`). Write
+      `drawer-bind.lua` and drive live rebinds through `hyprctl eval`.
+      Settings keeps the hyprlang spelling (`SUPER CTRL, R`) on disk and
+      converts to `SUPER + CTRL + R` at the boundary, so an existing
+      settings.json survives a provider change untouched.
+- [x] `packaging/test-config-hook.sh` — lua cases alongside the legacy ones,
+      including a `--verify-config` assertion that the generated Lua parses.
+      46 assertions, all green.
+- [x] README — note the two providers and how detection works.
+
+Verified end to end against a copy of a real CachyOS Lua config: install
+detects `lua`, hooks `hyprland.lua`, and `Hyprland --verify-config` reports
+`config ok`; uninstall restores `hyprland.lua` byte-identical.
+
+### Still broken: `hyprctl dispatch` is Lua-parsed too (NEXT)
+
+Found after the first reinstall — the drawer's rail rendered but nothing else
+worked. Under the Lua provider `hyprctl dispatch X Y` is wrapped as
+`return hl.dispatch(X Y)` and parsed as Lua, so every legacy dispatcher string
+is a syntax error:
+
+    $ hyprctl dispatch togglespecialworkspace drawer-DP-2
+    error: [string "return hl.dispatch(togglespecialworkspace dra..."]:1:
+    ')' expected near 'drawer'
+
+Consequence: `special:drawer-*` never opens, so `decoration:blur:special` has
+nothing to blur (the reported "no blur"), and window placement, floating,
+drag-to-drawer and geometry restore are all dead. `daemon.log` shows a
+`show: Error / execAsyncv` for every toggle.
+
+Verified working replacements:
+
+    hl.dsp.focus({ monitor = "DP-2" })
+    hl.dsp.workspace.toggle_special("drawer-DP-2")
+
+- [x] `app/service/Dispatch.ts` — new. Models each compositor action as data
+      and serializes per provider, so the two spellings sit side by side and
+      are unit-testable without a compositor. Imports nothing from `gi://`.
+- [x] `app/service/Provider.ts` — new. Shared provider detection, extracted
+      from Hotkey.ts (Hypr.ts needs it too).
+- [x] `Hypr.ts` — `dispatch()` now takes an `Action`, not a string. All 12
+      call sites converted, plus `Launcher.tsx:739` (`exec [float]`). Under
+      lua it uses the argv form of execAsync, since the Lua expression carries
+      quotes and commas that `shell_parse_argv` would mangle.
+- [x] `uninstall.sh` — eviction pass is provider-aware; trapped windows would
+      otherwise stay hidden on a Lua machine with no daemon left to reveal
+      them.
+- [x] `packaging/test-dispatch.ts` — 25 assertions covering both providers and
+      Lua string escaping (a .desktop Exec line with a quote would otherwise
+      close the literal early, or inject Lua). Runs under plain node via
+      native type stripping: `node packaging/test-dispatch.ts`.
+- [x] Every Lua serialization confirmed against a real Hyprland 0.56.2 with
+      the lua provider — each returns `ok` with the intended effect.
+
+- [ ] Add a live smoke test that dispatches each action against a scratch
+      compositor and fails on a non-`ok` reply. The serializer tests pin the
+      strings, but only a running Hyprland can catch a dispatcher being
+      renamed upstream.
+- [ ] Make dispatch failures loud. `show()`/`hide()` swallow them into
+      `console.error`, so the rail still renders and the install looks
+      successful while every compositor call fails — which is exactly why
+      this shipped broken. A repeated-failure notification would have turned
+      a silent breakage into an obvious one.
+
+Known wart, pre-existing and not fixed here: `test-config-hook.sh` runs
+`install.sh`, which calls `hyprctl reload` on step 8 whenever Hyprland is
+running. A sandboxed test therefore reloads the developer's live compositor
+~15 times per run. Harmless (the live config is unrelated to the temp dir) but
+rude; step 8 should be skipped when `XDG_CONFIG_HOME` is not the live one.
+
+Deliberate deviation from `drawer.conf`: the Lua template sets only
+`decoration.blur.special`, not `size` / `passes` / `xray`. The `.conf`
+version force-sets the global blur settings, which stomps whatever the user
+already had (on CachyOS, `decorations.lua` sets `size = 5, passes = 4`).
+Whether to narrow the legacy `.conf` the same way is an open question below.
+
 ## Distribution tiers (roadmap)
 
 ### Tier 1 — Git-tag releases + self-update script (NEXT)
@@ -150,3 +262,8 @@ Plan:
 - First tag version: `v0.1.0` (current code is feature-complete enough
   for a baseline; below 0.1.0 implies pre-alpha).
 - Auto-update polling: daily fine? Or per-launch only?
+- Should the legacy `config/drawer.conf` stop force-setting global blur
+  (`size`, `passes`, `new_optimizations`, `xray`) and set only
+  `decoration:blur:special`, matching the Lua template? It currently
+  overrides whatever blur the user already configured. Behaviour change for
+  existing legacy installs, so it needs a call rather than a silent fix.
