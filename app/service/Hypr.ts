@@ -1,6 +1,7 @@
 import { execAsync, exec } from "ags/process"
 import GLib from "gi://GLib"
 import { serialize, type Action } from "./Dispatch"
+import * as Match from "./Match"
 import { provider } from "./Provider"
 
 // ---------------------------------------------------------------------------
@@ -57,6 +58,12 @@ export function monitorFromSpecial(wsName: string | undefined): string | null {
 export type Client = {
     address: string
     class: string
+    // The class the window mapped with. Some apps rewrite `class` later, so
+    // this is a second chance at recognising them; Match scores it lower.
+    initialClass?: string
+    // 0 is the focused window, higher is further back in the focus stack.
+    // Used to break ties when an app has several windows open.
+    focusHistoryID?: number
     title: string
     pid: number
     workspace: { id: number; name: string }
@@ -173,11 +180,22 @@ export function clients(): Client[] {
     }
 }
 
-export function findByClass(cls: string): Client | undefined {
-    const want = cls.toLowerCase()
-    return clients().find(
-        (c) => c.class?.toLowerCase() === want || c.class?.toLowerCase().includes(want),
-    )
+// Is this client currently living in any monitor's drawer special?
+export function isInDrawer(c: Client): boolean {
+    return c.workspace?.name?.startsWith(SPECIAL_PREFIX) ?? false
+}
+
+// The running window belonging to a launcher entry, if there is one.
+// `keys` is an AppEntry's `matchKeys`; see Match.ts for why an app needs a
+// list of spellings rather than a single class name.
+//
+// Windows already inside a drawer special are deprioritized rather than
+// excluded: when an app has one window in the drawer and one outside, the user
+// is looking at the one outside, and that is the one to pull in. When every
+// candidate is already in the drawer the match still succeeds, and the caller
+// focuses it instead of re-issuing a move that would be invisible.
+export function findForApp(keys: readonly string[]): Client | undefined {
+    return Match.pickClient(keys, clients(), { deprioritize: isInDrawer })
 }
 
 // Every client that currently lives in any per-monitor drawer special.
@@ -200,12 +218,22 @@ export function isDrawerOpen(): boolean {
 // literals. See Dispatch.ts for why the two differ at all.
 export async function dispatch(action: Action): Promise<string> {
     const arg = serialize(action, provider())
-    if (provider() === "lua") {
-        // Argv form, not a command string: the Lua expression carries quotes,
-        // parens and commas that GLib.shell_parse_argv would mangle.
-        return await execAsync(["hyprctl", "dispatch", arg])
+    try {
+        if (provider() === "lua") {
+            // Argv form, not a command string: the Lua expression carries
+            // quotes, parens and commas that GLib.shell_parse_argv would
+            // mangle.
+            return await execAsync(["hyprctl", "dispatch", arg])
+        }
+        return await execAsync(`hyprctl dispatch ${arg}`)
+    } catch (e) {
+        // Log and rethrow. Callers keep whatever error handling they already
+        // had, but the failing command reaches daemon.log instead of vanishing
+        // into a swallowed promise - a silent dispatch failure is
+        // indistinguishable from "the drawer just ignored my click".
+        console.error("dispatch failed:", arg, e)
+        throw e
     }
-    return await execAsync(`hyprctl dispatch ${arg}`)
 }
 
 // Move a window into the target monitor's drawer special workspace. Used to
@@ -244,26 +272,23 @@ export async function spawnInSpecialOn(execStr: string, monitorName: string): Pr
     })
 }
 
-function matchClass(cls: string, c: Client): boolean {
-    const want = cls.toLowerCase()
-    const have = (c.class || "").toLowerCase()
-    return have === want || have.includes(want) || want.includes(have)
-}
-
-// Poll hyprctl for a newly-mapped window matching `cls` that wasn't in the
+// Poll hyprctl for a newly-mapped window matching `keys` that wasn't in the
 // pre-spawn address set. Used to attach floating/geom rules to apps whose
 // own startup is too slow for the spawn-time [float] dispatcher to stick.
+//
+// Deliberately the same matcher findForApp uses. This helper used to carry its
+// own private class comparison, which drifted from findByClass's and quietly
+// grew a third matching leg the other lacked - so an app could be recognised
+// after being spawned but never recognised for adoption.
 export async function awaitNewWindow(
-    cls: string,
+    keys: readonly string[],
     knownAddrs: Set<string>,
     timeoutMs = 4000,
 ): Promise<Client | null> {
     const intervalMs = 120
     const tries = Math.ceil(timeoutMs / intervalMs)
     for (let i = 0; i < tries; i++) {
-        const fresh = clients().find(
-            (c) => !knownAddrs.has(c.address) && matchClass(cls, c),
-        )
+        const fresh = Match.pickClient(keys, clients(), { exclude: knownAddrs })
         if (fresh) return fresh
         await new Promise<void>((resolve) => {
             GLib.timeout_add(GLib.PRIORITY_DEFAULT, intervalMs, () => {
@@ -298,6 +323,12 @@ export async function movePixel(address: string, x: number, y: number): Promise<
 
 export async function moveWindowToMonitor(address: string, monitorName: string): Promise<void> {
     await dispatch({ kind: "moveToMonitor", monitor: monitorName, address })
+}
+
+// Focus a window without moving it. Used when a click's target is already
+// sitting where a move would put it.
+export async function focusWindow(address: string): Promise<void> {
+    await dispatch({ kind: "focusWindow", address })
 }
 
 // Open the drawer special workspace on every monitor that doesn't already

@@ -91,16 +91,29 @@ Verified working replacements:
       native type stripping: `node packaging/test-dispatch.ts`.
 - [x] Every Lua serialization confirmed against a real Hyprland 0.56.2 with
       the lua provider — each returns `ok` with the intended effect.
+- [x] `packaging/test-match.ts` - window identity matching (`app/service/Match.ts`).
+      A .desktop file with no `StartupWMClass` falls back to Gio's
+      `get_executable()`, which is routinely an absolute path, so the drawer
+      compared `/opt/docker-desktop/bin/docker-desktop` against the window
+      class `docker-desktop` and never matched. "Move the running window into
+      the drawer" then fell through to "launch a new one", a no-op for a
+      single-instance app: clicking the tile appeared to do nothing. 15 of the
+      installed entries on the test machine had a path-shaped identity.
+      Runs under plain node: `node packaging/test-match.ts`.
 
 - [ ] Add a live smoke test that dispatches each action against a scratch
       compositor and fails on a non-`ok` reply. The serializer tests pin the
       strings, but only a running Hyprland can catch a dispatcher being
       renamed upstream.
-- [ ] Make dispatch failures loud. `show()`/`hide()` swallow them into
-      `console.error`, so the rail still renders and the install looks
-      successful while every compositor call fails — which is exactly why
-      this shipped broken. A repeated-failure notification would have turned
-      a silent breakage into an obvious one.
+- [x] Make dispatch failures loud (logging half). `Hypr.dispatch` now logs the
+      serialized command and rethrows, and `Launcher.launchSafe` catches the
+      launch promise every call site used to discard. Before this, a failed
+      adoption produced literally nothing - not even a line in `daemon.log`.
+- [ ] Make dispatch failures loud (notification half). `show()`/`hide()` still
+      swallow into `console.error`, so the rail renders and the install looks
+      successful while every compositor call fails - which is exactly why this
+      shipped broken. A repeated-failure notification would turn a silent
+      breakage into an obvious one.
 
 Known wart, pre-existing and not fixed here: `test-config-hook.sh` runs
 `install.sh`, which calls `hyprctl reload` on step 8 whenever Hyprland is

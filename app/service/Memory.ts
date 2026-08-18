@@ -1,5 +1,6 @@
 import GLib from "gi://GLib"
 import Gio from "gi://Gio"
+import { keyMatches } from "./Match"
 
 // `x`/`y` are GLOBAL layout coordinates — they are written straight from a
 // client's `.at`, which hyprctl reports in global space (see the invariant in
@@ -19,12 +20,13 @@ export type Positions = Record<string, Geometry>
 //
 // Writers now record the desktop-derived key where one is known. `get` keeps a
 // tolerant read for orphan windows (adopted from outside the drawer, so no
-// AppEntry exists) and for entries written before this change. The matching
-// rule is the same one Hypr.matchClass uses for the equivalent runtime
-// problem.
-function keyMatches(want: string, have: string): boolean {
-    return have === want || have.includes(want) || want.includes(have)
-}
+// AppEntry exists) and for entries written before this change. `keyMatches`
+// lives in Match.ts, shared with the runtime class matching, so the two key
+// spaces can never drift apart again.
+//
+// It also carries the compatibility for the day AppEntry.wmClass stopped being
+// a raw executable path: a file holding "/opt/docker-desktop/bin/docker-desktop"
+// is still found by the key "docker-desktop".
 
 const STATE_DIR = `${GLib.get_user_state_dir()}/hypr-drawer`
 const STATE_FILE = `${STATE_DIR}/positions.json`

@@ -172,7 +172,7 @@ function LauncherPage(props: { results: ReturnType<typeof createComputed<AppEntr
                 }}
                 onActivate={() => {
                     const first = Apps.search(query())[0]
-                    if (first) launch(first, 0)
+                    if (first) launchSafe(first, 0)
                 }}
                 $={(self: Gtk.Entry) => {
                     searchEntry = self
@@ -246,7 +246,7 @@ function LauncherPage(props: { results: ReturnType<typeof createComputed<AppEntr
                     >
                         <For each={props.results}>
                             {(app: AppEntry) => (
-                                <AppTile app={app} onLaunch={launch} mode="tiles" />
+                                <AppTile app={app} onLaunch={launchSafe} mode="tiles" />
                             )}
                         </For>
                     </box>
@@ -263,7 +263,7 @@ function LauncherPage(props: { results: ReturnType<typeof createComputed<AppEntr
                     >
                         <For each={props.results}>
                             {(app: AppEntry) => (
-                                <AppTile app={app} onLaunch={launch} mode="grid" />
+                                <AppTile app={app} onLaunch={launchSafe} mode="grid" />
                             )}
                         </For>
                     </Gtk.FlowBox>
@@ -275,7 +275,7 @@ function LauncherPage(props: { results: ReturnType<typeof createComputed<AppEntr
                     >
                         <For each={props.results}>
                             {(app: AppEntry) => (
-                                <AppTile app={app} onLaunch={launch} mode="compact" />
+                                <AppTile app={app} onLaunch={launchSafe} mode="compact" />
                             )}
                         </For>
                     </box>
@@ -700,6 +700,14 @@ function SideRadio(props: { value: Settings.DrawerSide; label: string }) {
     )
 }
 
+// Every launch entry point goes through here. `launch` is async and none of
+// its call sites can await it, so without this an adoption or spawn failure
+// became an unhandled rejection with nothing in daemon.log - the click simply
+// appeared to do nothing.
+function launchSafe(app: AppEntry, modifiers: number): void {
+    launch(app, modifiers).catch((e) => console.error("launch:", app.desktopId, e))
+}
+
 async function launch(app: AppEntry, modifiers: number) {
     Usage.recordLaunch(app.desktopId)
     const forceNew = !!(modifiers & (Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.CONTROL_MASK))
@@ -720,13 +728,25 @@ async function launch(app: AppEntry, modifiers: number) {
     }
 
     if (!forceNew) {
-        const existing = Hypr.findByClass(app.wmClass)
+        const existing = Hypr.findForApp(app.matchKeys)
         if (existing) {
             track(existing.address)
-            if (targetMon) {
-                await Hypr.moveToSpecialOn(existing.address, targetMon.name)
-                await Hypr.setFloating(existing.address)
+            if (!targetMon) {
+                // No focused monitor means nothing to move the window into.
+                // Rare, but it used to return here in silence, which is
+                // indistinguishable from the click never registering.
+                console.error("launch: no focused monitor, cannot adopt", app.desktopId)
+                refresh()
+                return
             }
+            if (existing.workspace?.name === Hypr.fullSpecialNameFor(targetMon.name)) {
+                // The window is already exactly where a move would put it, so
+                // moving it again would be invisible. Focus it instead.
+                await Hypr.focusWindow(existing.address)
+            } else {
+                await Hypr.moveToSpecialOn(existing.address, targetMon.name)
+            }
+            await Hypr.setFloating(existing.address)
             refresh()
             return
         }
@@ -741,7 +761,7 @@ async function launch(app: AppEntry, modifiers: number) {
     // Some apps (e.g. Rust/Tauri) ignore the spawn-time `[float]`
     // dispatcher and come up tiled. Wait for the window to appear and
     // force float so it's actually resizable inside the drawer.
-    const fresh = await Hypr.awaitNewWindow(app.wmClass, before)
+    const fresh = await Hypr.awaitNewWindow(app.matchKeys, before)
     if (fresh) {
         track(fresh.address)
         await Hypr.setFloating(fresh.address)

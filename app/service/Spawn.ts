@@ -135,13 +135,21 @@ export async function dropApp(
     // Move-existing path: reassign the window into the target monitor's
     // drawer special, then reposition.
     if (!forceNew) {
-        const existing = Hypr.findByClass(app.wmClass)
+        const existing = Hypr.findForApp(app.matchKeys)
         if (existing) {
             const size: DropSize = saved
                 ? { w: saved.w, h: saved.h }
                 : { w: existing.size[0], h: existing.size[1] }
             trackDrawerWindow(existing.address, app.wmClass)
-            await Hypr.moveToSpecialOn(existing.address, target.name)
+            // Already in the target monitor's drawer? Then the move is a
+            // no-op; focus it instead so the drop still does something
+            // visible. The geometry below still applies, because a drag
+            // carries an explicit drop point the user chose.
+            if (existing.workspace?.name === Hypr.fullSpecialNameFor(target.name)) {
+                await Hypr.focusWindow(existing.address)
+            } else {
+                await Hypr.moveToSpecialOn(existing.address, target.name)
+            }
             await Hypr.setFloating(existing.address)
             await Hypr.applyGeom(
                 existing.address,
@@ -155,7 +163,7 @@ export async function dropApp(
     // Spawn path: spawn directly into the target monitor's drawer special.
     const before = new Set(Hypr.clients().map((c) => c.address))
     await Hypr.spawnInSpecialOn(app.exec, target.name)
-    const fresh = await Hypr.awaitNewWindow(app.wmClass, before)
+    const fresh = await Hypr.awaitNewWindow(app.matchKeys, before)
     if (!fresh) return
     trackDrawerWindow(fresh.address, app.wmClass)
 
