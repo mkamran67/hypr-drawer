@@ -86,6 +86,17 @@ const cases: Array<{ label: string; action: Action; legacy: string; lua: string 
         lua: `hl.dsp.window.move({ exact = true, x = 60, y = 70, window = "address:${ADDR}" })`,
     },
     {
+        // Used when the app's only window is already sitting in the drawer:
+        // re-issuing movetoworkspacesilent there is invisible, so focus it
+        // instead and the click stops looking like a no-op. The lua form was
+        // dispatched against the live compositor (0.56.2, lua provider) and
+        // returned `ok`; the legacy string is the stock dispatcher name.
+        label: "focusWindow",
+        action: { kind: "focusWindow", address: ADDR },
+        legacy: `focuswindow address:${ADDR}`,
+        lua: `hl.dsp.focus({ window = "address:${ADDR}" })`,
+    },
+    {
         label: "moveToMonitor",
         action: { kind: "moveToMonitor", monitor: "DP-2", address: ADDR },
         legacy: `movewindow mon:DP-2,address:${ADDR}`,

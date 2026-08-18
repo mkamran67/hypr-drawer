@@ -1,11 +1,18 @@
 import Gio from "gi://Gio"
+import { identKeys } from "./Match"
 
 export type AppEntry = {
     name: string
     icon: string
     exec: string
     desktopId: string
+    // Canonical identity, and the key this app's geometry is remembered under.
+    // Always `matchKeys[0]` - never a filesystem path; see Match.identKeys.
     wmClass: string
+    // Every plausible spelling of the window class, best first. Used to find
+    // an already-running window; a single key is not enough, because .desktop
+    // metadata and Hyprland classes disagree constantly.
+    matchKeys: string[]
 }
 
 // Desktop Entry field codes (freedesktop spec). `get_commandline()` returns
@@ -24,17 +31,19 @@ function stripFieldCodes(cmd: string): string {
 
 function toEntry(info: Gio.DesktopAppInfo): AppEntry {
     const icon = info.get_string("Icon") || "application-x-executable"
-    const wmClass =
-        info.get_startup_wm_class() ||
-        info.get_executable() ||
-        info.get_name() ||
-        ""
+    const matchKeys = identKeys({
+        startupWmClass: info.get_startup_wm_class(),
+        executable: info.get_executable(),
+        desktopId: info.get_id(),
+        name: info.get_name(),
+    })
     return {
         name: info.get_name() || info.get_id() || "(unknown)",
         icon,
         exec: stripFieldCodes(info.get_commandline() || info.get_executable() || ""),
         desktopId: info.get_id() || "",
-        wmClass: wmClass.toLowerCase(),
+        wmClass: matchKeys[0] ?? "",
+        matchKeys,
     }
 }
 

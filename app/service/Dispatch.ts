@@ -28,6 +28,9 @@ export type Action =
     | { kind: "resizeExact"; w: number; h: number; address: string }
     | { kind: "moveExact"; x: number; y: number; address: string }
     | { kind: "moveToMonitor"; monitor: string; address: string }
+    // Focus a specific window. Used when the window is already where a move
+    // would put it, so the move would be an invisible no-op.
+    | { kind: "focusWindow"; address: string }
     // `workspace` is the full name including "special:"; the serializer adds
     // the silent/float rules.
     | { kind: "spawnWithRules"; exec: string; workspace: string }
@@ -68,6 +71,8 @@ export function serialize(a: Action, provider: Provider): string {
                 return `hl.dsp.window.move({ exact = true, x = ${a.x}, y = ${a.y}, ${win(a.address)} })`
             case "moveToMonitor":
                 return `hl.dsp.window.move({ monitor = ${luaStr(a.monitor)}, ${win(a.address)} })`
+            case "focusWindow":
+                return `hl.dsp.focus({ ${win(a.address)} })`
             case "spawnWithRules":
                 return `hl.dsp.exec_cmd(${luaStr(a.exec)}, { workspace = ${luaStr(`${a.workspace} silent`)}, float = true })`
             case "spawnFloating":
@@ -89,6 +94,8 @@ export function serialize(a: Action, provider: Provider): string {
             return `movewindowpixel exact ${a.x} ${a.y},address:${a.address}`
         case "moveToMonitor":
             return `movewindow mon:${a.monitor},address:${a.address}`
+        case "focusWindow":
+            return `focuswindow address:${a.address}`
         case "spawnWithRules":
             return `exec [workspace ${a.workspace} silent; float] ${a.exec}`
         case "spawnFloating":
