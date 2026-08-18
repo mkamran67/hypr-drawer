@@ -81,7 +81,7 @@ of disk for the first Nix install, cached after that.
 ## Install
 
 ```bash
-git clone <this-repo> hypr-drawer
+git clone https://github.com/mkamran67/hypr-drawer.git
 cd hypr-drawer
 ./install.sh
 ```
