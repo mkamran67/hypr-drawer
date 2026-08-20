@@ -180,6 +180,15 @@ export function clients(): Client[] {
     }
 }
 
+export function activeWindow(): Client | null {
+    try {
+        const active = JSON.parse(exec("hyprctl activewindow -j")) as Client
+        return active?.address ? active : null
+    } catch {
+        return null
+    }
+}
+
 // Is this client currently living in any monitor's drawer special?
 export function isInDrawer(c: Client): boolean {
     return c.workspace?.name?.startsWith(SPECIAL_PREFIX) ?? false

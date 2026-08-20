@@ -283,7 +283,7 @@ function LauncherPage(props: { results: ReturnType<typeof createComputed<AppEntr
             </Gtk.ScrolledWindow>
             <label
                 cssClasses={["launcher-hint"]}
-                label="Drag → move into drawer · Shift+drag → new · Right-click → favorite"
+                label="Drag → move in · Super+Alt+drag → pull out · Shift+drag → new"
             />
         </box>
     )

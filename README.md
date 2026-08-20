@@ -148,6 +148,7 @@ does nothing.
 | **Shift+Drag** (or Ctrl+Drag) | Always launches a new instance into the drawer. |
 | Click an app tile | Same as plain drag: move-if-running, otherwise launch. |
 | Resize/move a window inside the drawer | Geometry is saved per class — same app reopens at the same spot. |
+| **Super+Alt+left-drag** a drawer window | Pulls it onto the active regular workspace as a floating window and lets you drop it anywhere. |
 | Open the settings panel | Edit the toggle shortcut, tweak preferences. |
 | `SUPER + CTRL + R` again | Hides the drawer. Apps keep running in the background. |
 

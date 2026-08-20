@@ -1,5 +1,12 @@
 # hypr-drawer — Release & Distribution TODO
 
+## Extract a drawer app with Super+Alt+drag
+
+- [x] Reproduce the missing gesture at the generated-shortcut boundary.
+- [x] Add Super+Alt+left-drag extraction for legacy and Lua providers.
+- [x] Stop tracking intentionally extracted windows so they remain outside.
+- [x] Document and verify the gesture.
+
 Repo: `github.com/mkamran67/hypr-drawer`
 
 ---

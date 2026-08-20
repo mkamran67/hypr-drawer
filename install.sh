@@ -144,12 +144,18 @@ if [ ! -f "$DRAWER_BIND_FILE" ]; then
 -- Managed by hypr-drawer — edit via the in-app settings, not here.
 hl.unbind("SUPER + CTRL + R")
 hl.bind("SUPER + CTRL + R", hl.dsp.exec_cmd("$BIN_DIR/hypr-drawer toggle"))
+hl.unbind("SUPER + ALT + mouse:272")
+hl.bind("SUPER + ALT + mouse:272", hl.dsp.exec_cmd("$BIN_DIR/hypr-drawer extract"), { mouse = true })
+hl.bind("SUPER + ALT + mouse:272", hl.dsp.window.drag(), { mouse = true })
 EOF
     else
         cat > "$DRAWER_BIND_FILE" <<EOF
 # Managed by hypr-drawer — edit via the in-app settings, not here.
 unbind = SUPER CTRL, R
 bind = SUPER CTRL, R, exec, $BIN_DIR/hypr-drawer toggle
+unbind = SUPER ALT, mouse:272
+bind = SUPER ALT, mouse:272, exec, $BIN_DIR/hypr-drawer extract
+bindm = SUPER ALT, mouse:272, movewindow
 EOF
     fi
 fi

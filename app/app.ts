@@ -9,6 +9,7 @@ import * as Memory from "./service/Memory"
 import * as Spawn from "./service/Spawn"
 import * as Preview from "./service/Preview"
 import * as Hotkey from "./service/Hotkey"
+import { extractFocused } from "./service/Extraction"
 import * as Settings from "./service/Settings"
 import * as Shade from "./widget/Shade"
 import style from "./style.scss"
@@ -245,6 +246,21 @@ app.start({
             case "hide":
                 hide()
                 response("ok")
+                break
+            case "extract":
+                extractFocused({
+                    activeWindow: Hypr.activeWindow,
+                    untrack: (address) => drawerTracked.delete(address),
+                    setFloating: Hypr.setFloating,
+                    moveToRegular: async (address, monitorId) => {
+                        const monitor = Hypr.monitors().find((m) => m.id === monitorId)
+                        if (!monitor) throw new Error(`extract: monitor ${monitorId} not found`)
+                        await Hypr.moveToRegularOn(address, monitor.name)
+                    },
+                }).then(response).catch((e) => {
+                    console.error("extract:", e)
+                    response("error")
+                })
                 break
             case "quit":
                 response("bye")

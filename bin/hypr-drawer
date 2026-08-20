@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Thin CLI wrapper: hypr-drawer {daemon|toggle|show|hide|quit}
+# Thin CLI wrapper: hypr-drawer {daemon|toggle|show|hide|extract|quit}
 set -euo pipefail
 
 # Hyprland often starts with a minimal PATH that omits ~/.nix-profile/bin
@@ -29,6 +29,13 @@ case "$cmd" in
         # daemon just to immediately kill it.
         ags request -i "$INSTANCE" quit >/dev/null 2>&1 || true
         ;;
+    extract)
+        # The drawer is already open when this mouse gesture can target one
+        # of its windows, so its daemon must already be running. Keep this
+        # request synchronous: it untracks and moves the window before the
+        # paired native mouse-drag bind proceeds far enough to be released.
+        ags request -i "$INSTANCE" extract >/dev/null
+        ;;
     toggle|show|hide)
         # If no daemon is running yet, start it in the background and retry.
         # Daemon stderr lands in $LOG so post-mortem debugging is possible.
@@ -46,7 +53,7 @@ case "$cmd" in
         fi
         ;;
     *)
-        echo "usage: hypr-drawer {daemon|toggle|show|hide|quit}" >&2
+        echo "usage: hypr-drawer {daemon|toggle|show|hide|extract|quit}" >&2
         exit 2
         ;;
 esac

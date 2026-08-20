@@ -66,6 +66,7 @@ reset; seed_legacy; run_i
 chk "exactly one source line" "$(grep -chF 'drawer.conf' "$H/hyprland.conf")" "1"
 chk "drawer.conf installed"   "$(exists "$H/drawer.conf")" "yes"
 chk "no lua files emitted"    "$(exists "$H/drawer.lua")" "no"
+chk "legacy extract gesture seeded" "$(grep -cF 'SUPER ALT, mouse:272' "$H/drawer-bind.conf")" "3"
 run_u
 chk "no references remain"    "$(refs)" "0"
 chk "drawer.conf removed"     "$(exists "$H/drawer.conf")" "no"
@@ -134,6 +135,7 @@ reset; seed_lua; run_i
 chk "exactly one require line" "$(grep -chF 'require("drawer")' "$H/hyprland.lua")" "1"
 chk "drawer.lua installed"     "$(exists "$H/drawer.lua")" "yes"
 chk "drawer-bind.lua seeded"   "$(exists "$H/drawer-bind.lua")" "yes"
+chk "lua extract gesture seeded" "$(grep -cF 'SUPER + ALT + mouse:272' "$H/drawer-bind.lua")" "3"
 chk "no drawer.conf emitted"   "$(exists "$H/drawer.conf")" "no"
 chk "user config preserved"    "$(grep -cF -- '-- user config' "$H/hyprland.lua")" "1"
 run_u

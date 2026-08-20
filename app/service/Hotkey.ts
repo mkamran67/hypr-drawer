@@ -3,6 +3,7 @@ import Gio from "gi://Gio"
 import { execAsync } from "ags/process"
 import * as Settings from "./Settings"
 import { provider } from "./Provider"
+import { EXTRACT_COMBO, luaCombo, shortcutFileContent } from "./Shortcuts"
 
 // Hyprland reads the keybind from a tiny file we own, and which file that is
 // depends on the config provider the compositor is running:
@@ -27,34 +28,16 @@ function toggleCmd(): string {
     return `${GLib.get_home_dir()}/.local/bin/hypr-drawer toggle`
 }
 
+function binPath(): string {
+    return `${GLib.get_home_dir()}/.local/bin/hypr-drawer`
+}
+
 // Settings stores the hyprlang spelling, `SUPER CTRL, R`. Lua wants the mods
 // and the key in one plus-separated string, `SUPER + CTRL + R`. Converting at
 // the boundary keeps one canonical format on disk, so an existing
 // settings.json survives a move between providers untouched.
-function luaCombo(combo: string): string {
-    const [mods = "", key = ""] = combo.split(",")
-    return [...mods.trim().split(/\s+/), key.trim()].filter(Boolean).join(" + ")
-}
-
 function fileContent(combo: string): string {
-    const cmd = toggleCmd()
-    if (provider() === "lua") {
-        const lua = luaCombo(combo)
-        return [
-            "-- Managed by hypr-drawer — edit via the in-app settings, not here.",
-            "-- Rewritten whenever the user changes the toggle hotkey.",
-            `hl.unbind("${lua}")`,
-            `hl.bind("${lua}", hl.dsp.exec_cmd("${cmd}"))`,
-            "",
-        ].join("\n")
-    }
-    return [
-        "# Managed by hypr-drawer — edit via the in-app settings, not here.",
-        "# Rewritten whenever the user changes the toggle hotkey.",
-        `unbind = ${combo}`,
-        `bind = ${combo}, exec, ${cmd}`,
-        "",
-    ].join("\n")
+    return shortcutFileContent(provider(), combo, binPath())
 }
 
 function writeFile(combo: string): void {
@@ -67,9 +50,29 @@ function writeFile(combo: string): void {
 // Ensure the file exists on daemon start so a fresh install (or a settings
 // dir wipe) doesn't leave Hyprland with a dangling `source =` / `require`.
 export function ensureFile(): void {
-    const file = Gio.File.new_for_path(bindFile())
-    if (file.query_exists(null)) return
+    // Rewrite our managed file on startup so upgrades can add new drawer
+    // gestures without requiring the user to delete their existing bind file.
     writeFile(Settings.hotkey())
+    applyExtractionLive().catch((e) => console.error("Hotkey.ensureFile:", e))
+}
+
+async function applyExtractionLive(): Promise<void> {
+    if (provider() === "lua") {
+        const extract = luaCombo(EXTRACT_COMBO)
+        await execAsync(["hyprctl", "eval", `hl.unbind("${extract}")`])
+        await execAsync([
+            "hyprctl", "eval",
+            `hl.bind("${extract}", hl.dsp.exec_cmd("${binPath()} extract"), { mouse = true })`,
+        ])
+        await execAsync([
+            "hyprctl", "eval",
+            `hl.bind("${extract}", hl.dsp.window.drag(), { mouse = true })`,
+        ])
+        return
+    }
+    await execAsync(`hyprctl keyword unbind ${EXTRACT_COMBO}`)
+    await execAsync(`hyprctl keyword bind ${EXTRACT_COMBO}, exec, ${binPath()} extract`)
+    await execAsync(`hyprctl keyword bindm ${EXTRACT_COMBO}, movewindow`)
 }
 
 // Swap the live keybind AND persist it. Old combo is unbound at runtime so
@@ -104,6 +107,7 @@ export async function apply(oldCombo: string, newCombo: string): Promise<void> {
             await execAsync(`hyprctl keyword unbind ${newCombo}`)
             await execAsync(`hyprctl keyword bind ${newCombo}, exec, ${toggleCmd()}`)
         }
+        await applyExtractionLive()
     } catch (e) {
         console.error("Hotkey.apply:", e)
     }
