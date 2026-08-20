@@ -1,6 +1,7 @@
 import GLib from "gi://GLib"
 import Gio from "gi://Gio"
 import { createState } from "ags"
+import * as Favorites from "./Favorites"
 
 // Persistent record of how often each app has been launched from the drawer
 // and which apps the user has pinned as favorites. Keyed by desktopId so it
@@ -55,16 +56,12 @@ export function recordLaunch(desktopId: string): void {
 
 export function toggleFavorite(desktopId: string): void {
     if (!desktopId) return
-    const list = favorites()
-    const next = list.includes(desktopId)
-        ? list.filter((id) => id !== desktopId)
-        : [...list, desktopId]
-    setFavoritesState(next)
+    setFavoritesState(Favorites.toggle(favorites(), desktopId))
     persist()
 }
 
 export function isFavorite(desktopId: string): boolean {
-    return favorites().includes(desktopId)
+    return Favorites.isFavorite(favorites(), desktopId)
 }
 
 export function count(desktopId: string): number {

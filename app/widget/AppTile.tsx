@@ -1,7 +1,7 @@
 import { Gtk, Gdk } from "ags/gtk4"
 import GObject from "gi://GObject"
 import GLib from "gi://GLib"
-import { createComputed } from "ags"
+import { createComputed, createState } from "ags"
 import { AppEntry } from "../service/Apps"
 import { setActiveDrag, clearActiveDrag } from "../service/DragState"
 import * as Preview from "../service/Preview"
@@ -10,6 +10,7 @@ import * as Hypr from "../service/Hypr"
 import * as Layout from "../service/Layout"
 import * as Settings from "../service/Settings"
 import * as Usage from "../service/Usage"
+import * as Favorites from "../service/Favorites"
 
 type Mode = "tiles" | "grid" | "compact"
 
@@ -27,11 +28,24 @@ export default function AppTile({ app, onLaunch, mode = "tiles" }: Props) {
     const drag = new Gtk.DragSource({ actions: Gdk.DragAction.COPY })
     drag.propagationPhase = Gtk.PropagationPhase.CAPTURE
 
-    const tileClasses = createComputed(() => {
-        const base = ["app-tile", `app-tile-${mode}`]
-        if (Settings.favoritesEnabled() && Usage.isFavorite(app.desktopId)) base.push("favorited")
-        return base
-    })
+    const tileClasses = ["app-tile", `app-tile-${mode}`]
+
+    // The star only appears while the pointer is over the tile, unless the app
+    // is already a favorite - a permanent star on every row would out-shout the
+    // app icons. GTK's :hover would only match the widget actually under the
+    // pointer, so the overlay tracks it explicitly and shares it with its
+    // sibling star.
+    //
+    // It sits on the left: the ScrolledWindow's overlay scrollbar materializes
+    // over the right edge of the list and would swallow a star parked there.
+    const [hovered, setHovered] = createState(false)
+    const isFav = createComputed(() => Usage.isFavorite(app.desktopId))
+    const starVisible = createComputed(() => isFav() || hovered())
+    const starGlyph = createComputed(() => Favorites.starGlyph(isFav()))
+    const starTip = createComputed(() => Favorites.starTooltip(isFav()))
+    const starClasses = createComputed(() =>
+        isFav() ? ["fav-star", `fav-star-${mode}`, "is-fav"] : ["fav-star", `fav-star-${mode}`],
+    )
 
     drag.connect("prepare", () => {
         const payload = JSON.stringify(app)
@@ -67,71 +81,92 @@ export default function AppTile({ app, onLaunch, mode = "tiles" }: Props) {
     }
 
     return (
-        <button
-            cssClasses={tileClasses}
-            tooltipText={app.name}
-            onClicked={() => onLaunch(app, lastModifiers)}
-            $={(self) => {
-                self.add_controller(drag)
-                self.add_controller(keyCtl)
-
-                // Right-click toggles favorite. Works regardless of whether
-                // the favorites toggle is enabled — that flag only controls
-                // whether favorites influence the visible ordering, so the
-                // user can pre-mark apps before flipping the setting on.
-                const rclick = new Gtk.GestureClick({ button: Gdk.BUTTON_SECONDARY })
-                rclick.connect("pressed", () => {
-                    Usage.toggleFavorite(app.desktopId)
-                })
-                self.add_controller(rclick)
-
-                drag.connect("drag-begin", () => {
-                    try {
-                        const paintable = Gtk.WidgetPaintable.new(self)
-                        drag.set_icon(paintable, 0, 0)
-                    } catch (e) {
-                        console.error("drag-begin set_icon:", e)
-                    }
-                    setActiveDrag(app)
-                    Preview.show(app)
-                    // Prime position so the rect doesn't flash at (0, 0).
-                    const p0 = Hypr.cursorPos()
-                    if (p0) Preview.move(p0.x, p0.y)
-
-                    stopPoll()
-                    // ~60Hz cursor polling for smooth preview tracking.
-                    pollId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
-                        const p = Hypr.cursorPos()
-                        if (p) Preview.move(p.x, p.y)
-                        return true
-                    })
-                })
-
-                drag.connect("drag-end", () => {
-                    stopPoll()
-                    const p = Hypr.cursorPos()
-                    Preview.hide()
-                    clearActiveDrag()
-                    if (!p) return
-                    if (Layout.isOverRail(p.x, p.y)) return
-                    const mods = readModifierState()
-                    const forceNew = !!(
-                        mods &
-                        (Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.CONTROL_MASK)
-                    )
-                    Spawn.dropApp(app, p.x, p.y, forceNew).catch(console.error)
-                })
-
-                drag.connect("drag-cancel", () => {
-                    stopPoll()
-                    Preview.hide()
-                    clearActiveDrag()
-                    return false
-                })
+        <overlay
+            $={(self: Gtk.Overlay) => {
+                const motion = new Gtk.EventControllerMotion()
+                motion.connect("enter", () => setHovered(true))
+                motion.connect("leave", () => setHovered(false))
+                self.add_controller(motion)
             }}
         >
-            {renderBody(app, mode)}
-        </button>
+            <button
+                cssClasses={tileClasses}
+                tooltipText={app.name}
+                onClicked={() => onLaunch(app, lastModifiers)}
+                $={(self) => {
+                    self.add_controller(drag)
+                    self.add_controller(keyCtl)
+
+                    // Right-click toggles favorite. Works regardless of whether
+                    // the favorites toggle is enabled — that flag only controls
+                    // whether favorites influence the visible ordering, so the
+                    // user can pre-mark apps before flipping the setting on.
+                    const rclick = new Gtk.GestureClick({ button: Gdk.BUTTON_SECONDARY })
+                    rclick.connect("pressed", () => {
+                        Usage.toggleFavorite(app.desktopId)
+                    })
+                    self.add_controller(rclick)
+
+                    drag.connect("drag-begin", () => {
+                        try {
+                            const paintable = Gtk.WidgetPaintable.new(self)
+                            drag.set_icon(paintable, 0, 0)
+                        } catch (e) {
+                            console.error("drag-begin set_icon:", e)
+                        }
+                        setActiveDrag(app)
+                        Preview.show(app)
+                        // Prime position so the rect doesn't flash at (0, 0).
+                        const p0 = Hypr.cursorPos()
+                        if (p0) Preview.move(p0.x, p0.y)
+
+                        stopPoll()
+                        // ~60Hz cursor polling for smooth preview tracking.
+                        pollId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
+                            const p = Hypr.cursorPos()
+                            if (p) Preview.move(p.x, p.y)
+                            return true
+                        })
+                    })
+
+                    drag.connect("drag-end", () => {
+                        stopPoll()
+                        const p = Hypr.cursorPos()
+                        Preview.hide()
+                        clearActiveDrag()
+                        if (!p) return
+                        if (Layout.isOverRail(p.x, p.y)) return
+                        const mods = readModifierState()
+                        const forceNew = !!(
+                            mods &
+                            (Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.CONTROL_MASK)
+                        )
+                        Spawn.dropApp(app, p.x, p.y, forceNew).catch(console.error)
+                    })
+
+                    drag.connect("drag-cancel", () => {
+                        stopPoll()
+                        Preview.hide()
+                        clearActiveDrag()
+                        return false
+                    })
+                }}
+            >
+                {renderBody(app, mode)}
+            </button>
+            <button
+                $type="overlay"
+                cssClasses={starClasses}
+                visible={starVisible}
+                tooltipText={starTip}
+                canFocus={false}
+                halign={Gtk.Align.START}
+                valign={mode === "compact" ? Gtk.Align.CENTER : Gtk.Align.START}
+                onClicked={() => Usage.toggleFavorite(app.desktopId)}
+            >
+                <label cssClasses={["fav-star-glyph"]} label={starGlyph} />
+            </button>
+        </overlay>
     )
 }
 

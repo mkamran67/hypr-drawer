@@ -149,6 +149,8 @@ does nothing.
 | Click an app tile | Same as plain drag: move-if-running, otherwise launch. |
 | Resize/move a window inside the drawer | Geometry is saved per class — same app reopens at the same spot. |
 | **Super+Alt+left-drag** a drawer window | Pulls it onto the active regular workspace as a floating window and lets you drop it anywhere. |
+| Click the star on a tile | Pin or unpin the app as a favorite. The star appears on hover, on the left of the tile, and stays gold while the app is pinned. |
+| Hover the strip at the bottom of the rail | Tooltip with the full shortcut list, including whichever toggle hotkey is bound right now. |
 | Open the settings panel | Edit the toggle shortcut, tweak preferences. |
 | `SUPER + CTRL + R` again | Hides the drawer. Apps keep running in the background. |
 

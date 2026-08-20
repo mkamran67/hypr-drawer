@@ -51,24 +51,13 @@ flowbox > flowboxchild {
   min-width: 0;
 }
 
+/* The extra left padding is the star's gutter. A compact row is one line of
+ * icon + label with nothing to spare, so without it the star would sit on top
+ * of the app icon; reserving the space keeps every row aligned whether or not
+ * its star is showing. */
 .app-tile-compact {
-  padding: 4px 8px;
+  padding: 4px 8px 4px 26px;
   border-radius: 6px;
-}
-
-/* A subtle left rule on tiles/compact and a top rule on grid items makes
- * favorites discoverable without a separate star widget, and it disappears
- * automatically when the favorites toggle is off (we don't add the class). */
-.app-tile.favorited {
-  border-left: 2px solid rgba(240, 200, 100, 0.85);
-  padding-left: 6px;
-}
-
-.app-tile-grid.favorited {
-  border-left: none;
-  padding-left: 6px;
-  border-top: 2px solid rgba(240, 200, 100, 0.85);
-  padding-top: 4px;
 }
 
 .launcher-hint {
@@ -174,4 +163,74 @@ window.drawer-shade {
   font-weight: 600;
   letter-spacing: 0.04em;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+/* Favorite star. An overlay button pinned to the top-left corner of every tile
+ * - left, because the scrolled list's overlay scrollbar covers the right edge.
+ * AppTile only keeps it in the tree while the tile is hovered or the app is
+ * already a favorite, so these rules only cover those two states. The
+ * translucent plate behind it keeps the glyph readable over a light app icon. */
+.fav-star {
+  min-width: 0;
+  min-height: 0;
+  margin: 2px;
+  padding: 1px 3px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(20, 22, 28, 0.6);
+}
+
+.fav-star:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.fav-star-glyph {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.fav-star.is-fav .fav-star-glyph {
+  color: rgba(240, 200, 100, 0.95);
+}
+
+/* Grid cells can be as small as ~30 px wide at 10 columns, so the star sheds
+ * its margin and a point of size rather than swallowing the icon. */
+.fav-star-grid {
+  margin: 0;
+  padding: 0 2px;
+}
+
+.fav-star-grid .fav-star-glyph {
+  font-size: 11px;
+}
+
+.fav-star-compact {
+  margin: 0 0 0 4px;
+}
+
+/* Bottom shortcut strip: live toggle hotkey on the left, hover affordance on
+ * the right, full shortcut list in the tooltip. */
+.shortcut-bar {
+  padding: 6px 4px 2px 4px;
+  margin-top: 2px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.shortcut-bar-glyph {
+  font-size: 12px;
+  opacity: 0.5;
+}
+
+.shortcut-bar-keys {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  opacity: 0.8;
+}
+
+.shortcut-bar-more {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.45;
 }

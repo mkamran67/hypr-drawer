@@ -8,6 +8,7 @@ import * as Memory from "../service/Memory"
 import * as Hotkey from "../service/Hotkey"
 import * as Usage from "../service/Usage"
 import * as RailState from "../service/RailState"
+import * as Shortcuts from "../service/Shortcuts"
 import { AppEntry } from "../service/Apps"
 
 const [query, setQuery] = createState("")
@@ -281,10 +282,32 @@ function LauncherPage(props: { results: ReturnType<typeof createComputed<AppEntr
                     </box>
                 </Gtk.Stack>
             </Gtk.ScrolledWindow>
+            <ShortcutBar />
+        </box>
+    )
+}
+
+// Bottom strip of the rail. It shows the toggle hotkey the user actually has
+// bound right now - which is the one thing a static hint line could never get
+// right after a rebind - and parks the rest of the shortcut list in a tooltip
+// so the rail stays uncluttered.
+function ShortcutBar() {
+    const tip = createComputed(() => Shortcuts.shortcutTooltip(Settings.hotkey()))
+    return (
+        <box
+            cssClasses={["shortcut-bar"]}
+            spacing={6}
+            tooltipText={tip}
+        >
+            <label cssClasses={["shortcut-bar-glyph"]} label="⌨" />
             <label
-                cssClasses={["launcher-hint"]}
-                label="Drag → move in · Super+Alt+drag → pull out · Shift+drag → new"
+                cssClasses={["shortcut-bar-keys"]}
+                label={createComputed(() => Shortcuts.humanCombo(Settings.hotkey()))}
+                hexpand
+                xalign={0}
+                ellipsize={3}
             />
+            <label cssClasses={["shortcut-bar-more"]} label="shortcuts ⓘ" />
         </box>
     )
 }
